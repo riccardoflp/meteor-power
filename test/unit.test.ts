@@ -5,10 +5,11 @@ import * as path from 'path';
 import { parseJs } from '../src/core/jsParser';
 import { parseHtml } from '../src/core/htmlParser';
 import { MeteorIndex } from '../src/core/index';
-import { definitions, enclosingTemplate, problems, references, targetAt, Target } from '../src/core/queries';
+import { definitions, enclosingTemplate, hasConflict, helperOwner, problems, references, targetAt, Target, templateUsages } from '../src/core/queries';
 import { Loc, Pos } from '../src/core/model';
 import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
 import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
+import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePackageJs } from '../src/core/apps';
 
 const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
 
@@ -385,4 +386,157 @@ test('rename refuses invalid or conflicting names', () => {
   assert.match(err('imports/ui/components/userCard.html', 'modalTitle', 1, 'x')!, /data context/);
   const ev = renameInfo(at('client/legacy/logic/userCard.js', "'click .js-save", 2));
   assert.ok('error' in ev);
+});
+
+// ------------------------------------------------------------------------------ template-extension
+
+test('inheritsHelpersFrom: inherited helpers resolve from the HTML of the child template', () => {
+  const t = at('imports/ui/components/cards.html', '{{title}} {{subtitle}}', 3);
+  assert.equal(t.type, 'helper');
+  const defs = definitions(index, t);
+  assert.deepEqual(where(defs.map((d) => d.loc)), ['imports/ui/components/cards.js']);
+  assert.equal(textAt(defs[0].loc), 'title');
+  assert.equal(helperOwner(index, 'fancyCard', 'title', null), 'baseCard');
+  assert.equal(helperOwner(index, 'fancyCard', 'subtitle', null), 'fancyCard');
+  // the parent's helper is used in both templates
+  const refs = references(index, at('imports/ui/components/cards.js', 'title()', 1), false);
+  assert.deepEqual(where(refs), ['imports/ui/components/cards.html', 'imports/ui/components/cards.html']);
+});
+
+test('inheritsEventsFrom, copyAs and template names in template-extension calls', () => {
+  // the parent's event map matches elements of the child too
+  const ev = definitions(index, at('imports/ui/components/cards.js', "'click .js-open'", 2));
+  assert.equal(ev.length, 2);
+  // {{> plainCard}} → the copyAs call that creates it, and no diagnostic
+  const copy = definitions(index, at('imports/ui/components/cards.html', '{{> plainCard', 5));
+  assert.deepEqual(copy.map((d) => textAt(d.loc)), ['plainCard']);
+  assert.deepEqual(noProblems(index, 'imports/ui/components/cards.html'), []);
+  // 'baseCard' inside inheritsHelpersFrom(...) → the template
+  const base = definitions(index, at('imports/ui/components/cards.js', "inheritsHelpersFrom('baseCard", 21));
+  assert.deepEqual(where(base.map((d) => d.loc)), ['imports/ui/components/cards.html']);
+  // Template.fancyCard.inheritsHelpersFrom is not a usage of fancyCard
+  assert.equal(templateUsages(index, 'fancyCard').length, 1);
+});
+
+test('rename inherited helper and template linked through template-extension', () => {
+  const helper = doRename('imports/ui/components/cards.html', '{{title}} {{subtitle}}', 3, 'heading');
+  assert.deepEqual(helper.files, ['imports/ui/components/cards.html', 'imports/ui/components/cards.html', 'imports/ui/components/cards.js']);
+  const tpl = doRename('imports/ui/components/cards.html', 'name="baseCard"', 7, 'cardBase');
+  // <template name>, Template.baseCard ×3, 'baseCard' in inheritsHelpersFrom and inheritsEventsFrom
+  assert.equal(tpl.edits.length, 6);
+  assert.ok(tpl.after.a.helperParents.get('fancyCard')!.every((p) => p.from === 'cardBase'));
+});
+
+// ---------------------------------------------------------------------------------------- apps
+
+const MULTI = path.resolve(__dirname, '../../test/fixtures/multi');
+const M = (rel: string) => path.join(MULTI, rel);
+
+test('apps: .meteor/packages and package.js parsing', () => {
+  assert.deepEqual(parseMeteorPackages('# comment\n\nmeteor-base@1.5.2\nacme:audit # local\n  blaze  \n'), ['meteor-base', 'acme:audit', 'blaze']);
+  const pkg = parsePackageJs(fs.readFileSync(M('packages/audit/package.js'), 'utf8'), 'audit');
+  assert.deepEqual(pkg, { name: 'acme:audit', uses: ['ecmascript', 'acme:logger'] });
+  assert.deepEqual(parsePackageJs("Package.describe({ summary: 'x' });", 'my-pkg'), { name: 'my-pkg', uses: [] });
+  assert.equal(parsePackageJs('export const x = 1;', 'x'), undefined);
+});
+
+/** The multi-app fixture: shared/ is reachable as admin/imports/shared and web/imports/shared (symlinks in the real run). */
+function buildMulti() {
+  const all = walk(MULTI);
+  const apps: AppRoot[] = all
+    .filter((f) => slash(f).endsWith('.meteor/release'))
+    .map((f) => {
+      const dir = path.dirname(path.dirname(f));
+      return { id: normPath(dir), name: path.basename(dir), packages: parseMeteorPackages(fs.readFileSync(path.join(dir, '.meteor', 'packages'), 'utf8')) };
+    });
+  const packages: PackageRoot[] = all
+    .filter((f) => path.basename(f) === 'package.js')
+    .map((f) => ({ dir: normPath(path.dirname(f)), ...parsePackageJs(fs.readFileSync(f, 'utf8'), path.basename(path.dirname(f)))! }));
+  const layout = new AppLayout(apps, packages);
+  const idx = new MeteorIndex();
+  idx.setApps(new Map(apps.map((a) => [a.id, a.name])));
+  for (const file of all) {
+    if (!/\.(js|html)$/.test(file) || path.basename(file) === 'package.js') continue;
+    const text = fs.readFileSync(file, 'utf8');
+    const facts = file.endsWith('.html') ? parseHtml(file, text) : parseJs(file, text);
+    if (facts) idx.update(facts);
+    const rel = slash(path.relative(MULTI, file));
+    const paths = [file, ...(rel.startsWith('shared/') ? ['admin', 'web'].map((app) => path.join(MULTI, app, 'imports', rel)) : [])];
+    idx.setFileApps(file, layout.appsOf(paths));
+  }
+  return idx;
+}
+
+const multi = buildMulti();
+const mAt = (rel: string, needle: string, delta = 1) => {
+  const text = fs.readFileSync(M(rel), 'utf8');
+  const i = text.indexOf(needle);
+  assert.ok(i >= 0, `"${needle}" not in ${rel}`);
+  const t = targetAt(multi, M(rel), new LineMap(text).pos(i + delta));
+  assert.ok(t, `no target at "${needle}" in ${rel}`);
+  return t!;
+};
+const mWhere = (locs: { file: string }[]) => locs.map((l) => slash(path.relative(MULTI, l.file))).sort();
+const appNames = (rel: string) => multi.appsOf(M(rel)).map((id) => multi.appName(id));
+const mProblems = (rel: string) => problems(multi, M(rel), { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }).map((p) => p.message);
+
+test('apps: membership through folders, symlinked shared code and local packages', () => {
+  assert.ok(multi.isMultiApp);
+  assert.deepEqual(appNames('admin/client/main.js'), ['admin']);
+  assert.deepEqual(appNames('web/server/methods.js'), ['web']);
+  assert.deepEqual(appNames('shared/api.js'), ['admin', 'web']);
+  assert.deepEqual(appNames('packages/audit/audit.js'), ['admin']);
+  // used by acme:audit, which admin uses
+  assert.deepEqual(appNames('packages/logger/logger.js'), ['admin']);
+  // used by nobody and outside every app: visible from everywhere
+  assert.deepEqual(appNames('packages/unused/unused.js'), []);
+});
+
+test('apps: definitions, helpers and templates resolve inside the app of the file', () => {
+  assert.deepEqual(mWhere(definitions(multi, mAt('admin/client/main.js', "'common.ping'", 2)).map((d) => d.loc)), ['admin/server/methods.js']);
+  // shared code runs in both apps
+  assert.deepEqual(mWhere(definitions(multi, mAt('shared/api.js', "'common.ping'", 2)).map((d) => d.loc)), ['admin/server/methods.js', 'web/server/methods.js']);
+  assert.deepEqual(mWhere(definitions(multi, mAt('web/client/main.html', '{{title}}', 3)).map((d) => d.loc)), ['web/client/main.js']);
+  assert.deepEqual(mWhere(definitions(multi, mAt('admin/client/main.html', '{{> header', 4)).map((d) => d.loc)), ['shared/header.html']);
+  // the same constant has a different value in each app
+  assert.deepEqual([...multi.a.methods.keys()].filter((n) => n.endsWith('.home')).sort(), ['admin.home', 'web.home']);
+  const home = mAt('web/client/main.js', 'PAGE.HOME', 1);
+  assert.equal(home.name, 'web.home');
+  assert.deepEqual(mWhere(definitions(multi, home).map((d) => d.loc)), ['web/server/methods.js']);
+  // references of an app's method: its own calls and the shared ones
+  assert.deepEqual(mWhere(references(multi, mAt('admin/server/methods.js', "'common.ping'", 2), true)), ['admin/client/main.js', 'admin/server/methods.js', 'shared/api.js']);
+  // the same method in two apps is not a duplicate
+  assert.equal(hasConflict(multi, multi.a.methods.get('common.ping')!.map((d) => d.loc)), false);
+});
+
+test('apps: diagnostics report names missing in the app (or in one of the apps of shared code)', () => {
+  assert.deepEqual(mProblems('admin/client/main.js'), ["Meteor method 'web.signup' is not defined in app 'admin'."]);
+  assert.deepEqual(mProblems('web/client/main.js'), ["Meteor method 'audit.log' is not defined in app 'web'."]);
+  assert.deepEqual(mProblems('shared/api.js'), ["Meteor method 'admin.purge' is not defined in app 'web'."]);
+  assert.deepEqual(mProblems('admin/client/main.html'), []);
+});
+
+test('apps: rename stays inside the apps that share the name', () => {
+  const edits = (rel: string, needle: string, delta: number, name: string) => {
+    const r = renameEdits(multi, mAt(rel, needle, delta), name);
+    assert.ok('edits' in r, 'error' in r ? r.error : '');
+    return mWhere((r as { edits: TextEdit[] }).edits.map((e) => e.loc));
+  };
+  // only the admin helper and template
+  assert.deepEqual(edits('admin/client/main.html', '{{title}}', 3, 'heading'), ['admin/client/main.html', 'admin/client/main.js']);
+  // web.signup is called (wrongly) from admin too: that call is not web's
+  assert.deepEqual(edits('web/server/methods.js', "'web.signup'", 2, 'web.register'), ['web/client/main.js', 'web/server/methods.js']);
+  // common.ping is called from shared code: renaming it in one app must rename it in the other one too
+  assert.deepEqual(edits('admin/server/methods.js', "'common.ping'", 2, 'common.pong'), [
+    'admin/client/main.js',
+    'admin/server/methods.js',
+    'shared/api.js',
+    'web/client/main.js',
+    'web/server/methods.js',
+  ]);
+  // a name existing only in another app is free…
+  assert.ok('edits' in renameEdits(multi, mAt('packages/audit/audit.js', "'audit.log'", 2), 'web.signup'));
+  // …unless shared code ties the two apps: admin.purge is called from shared/api.js, which runs in web too
+  const tied = renameEdits(multi, mAt('admin/server/methods.js', "'admin.purge'", 2), 'web.signup');
+  assert.match('error' in tied ? tied.error : '', /already exists/);
 });

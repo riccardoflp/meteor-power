@@ -23,6 +23,7 @@ if (tests) {
     { ...common, entryPoints: ['test/unit.test.ts'], outfile: 'out/test/unit.test.js' },
     { ...common, entryPoints: ['test/integration/run.ts'], outfile: 'out/test/integration/run.js', external: ['vscode', '@vscode/test-electron'] },
     { ...common, entryPoints: ['test/integration/suite.ts'], outfile: 'out/test/integration/suite.js' },
+    { ...common, entryPoints: ['test/integration/multi.ts'], outfile: 'out/test/integration/multi.js' },
   );
 }
 

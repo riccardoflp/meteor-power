@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { parse, ParserPlugin } from '@babel/parser';
-import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, NameKind, TemplatePartKind } from './model';
+import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, NameKind, TemplateLinkKind, TemplatePartKind } from './model';
 import { envFromPath, LineMap, makeSnippet, stripBom } from './text';
 
 // Babel AST nodes; typed loosely on purpose, we only read a handful of fields.
@@ -11,6 +11,8 @@ const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout/;
 const CONSTANTS_CHECK = /\bexport\s+(?:const|let|var|enum|default)\b/;
 const CALL_FNS = new Set(['call', 'callAsync', 'apply', 'applyAsync']);
 const TEMPLATE_PART_KINDS = new Set<string>(['helpers', 'events', 'onCreated', 'onRendered', 'onDestroyed']);
+/** aldeed:template-extension */
+const TEMPLATE_LINK_KINDS = new Set<string>(['inheritsHelpersFrom', 'inheritsEventsFrom', 'inheritsHooksFrom', 'replaces', 'copyAs']);
 /** Properties of the global `Template` that are not template names. */
 const TEMPLATE_STATICS = new Set([
   'instance',
@@ -316,6 +318,26 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
         fullLoc: loc(node.start, node.end),
         members,
       });
+      return;
+    }
+
+    // Template.foo.inheritsHelpersFrom('bar' | ['bar', 'baz']), replaces('bar'), copyAs('bar')
+    if (tpl && TEMPLATE_LINK_KINDS.has(prop)) {
+      const arg = args[0] && unwrap(args[0]);
+      const list: Node[] = arg?.type === 'ArrayExpression' ? arg.elements : [arg];
+      for (const el of list) {
+        const s = el && staticString(el);
+        if (!s) continue;
+        facts.templateLinks.push({
+          template: tpl.name!,
+          kind: prop as TemplateLinkKind,
+          other: s,
+          nameLoc: loc(tpl.start, tpl.end),
+          otherLoc: loc(el.start + 1, el.end - 1),
+          fullLoc: loc(node.start, node.end),
+        });
+        addTemplateRef(s, 'string', el.start + 1, el.end - 1);
+      }
       return;
     }
 

@@ -6,3 +6,4 @@ out/
 
 # created by test/integration/run.ts (symlinked folders)
 test/fixtures/app/apps/
+test/fixtures/multi/*/imports/shared

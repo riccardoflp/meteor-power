@@ -26,3 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Constant names are also resolved through `import { X as Y }`, default imports (`import NAMES from './names'`) and destructuring (`const { RESET } = USERS_METHODS`)
 - `public/` is excluded from indexing by default (static files, not Blaze)
 - **Rename (F2)** of methods, publications, templates and helpers across JS and HTML; names coming from constants are renamed in the constant
+- **Several Meteor apps in one workspace**: every folder with `.meteor/release` is an app, and definitions, references, completion, diagnostics, CodeLens and rename are resolved inside the app(s) of the current file
+  - shared code symlinked into several apps belongs to all of them; diagnostics report names missing in some of those apps
+  - local packages belong to the apps using them in `.meteor/packages` (also through other local packages)
+  - constants with the same name are resolved per app
+  - side panel filter to show a single app
+- `meteorPower.packageDirs` (and `METEOR_PACKAGE_DIRS`) to index local packages outside the workspace
+- **aldeed:template-extension**: `inheritsHelpersFrom`, `inheritsEventsFrom`, `replaces` and `copyAs` are followed by definitions, references, completion, rename and the side panel

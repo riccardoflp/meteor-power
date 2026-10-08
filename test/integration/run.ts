@@ -15,21 +15,36 @@ async function main() {
     fs.mkdirSync(path.dirname(link), { recursive: true });
     if (!fs.existsSync(link)) fs.symlinkSync(path.join(app, 'common'), link, 'junction');
   }
+  // Two Meteor apps sharing a folder: multi/{admin,web}/imports/shared → multi/shared.
+  const multi = path.join(root, 'test', 'fixtures', 'multi');
+  for (const name of ['admin', 'web']) {
+    const link = path.join(multi, name, 'imports', 'shared');
+    if (!fs.existsSync(link)) fs.symlinkSync(path.join(multi, 'shared'), link, 'junction');
+  }
+
   const vscodeExecutablePath =
     process.env.VSCODE_EXECUTABLE ?? path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Microsoft VS Code', 'Code.exe');
-  await runTests({
-    vscodeExecutablePath,
-    extensionDevelopmentPath: root,
-    extensionTestsPath: path.join(root, 'out', 'test', 'integration', 'suite.js'),
-    launchArgs: [
-      path.join(root, 'test', 'fixtures', 'app'),
-      '--disable-extensions',
-      '--disable-workspace-trust',
-      '--skip-welcome',
-      '--user-data-dir',
-      path.join(os.tmpdir(), 'meteor-power-vscode-test'),
-    ],
-  });
+  const runs = [
+    { workspace: app, suite: 'suite.js' },
+    { workspace: multi, suite: 'multi.js' },
+  ];
+  for (const r of runs) {
+    console.log(`
+=== ${path.basename(r.workspace)} ===`);
+    await runTests({
+      vscodeExecutablePath,
+      extensionDevelopmentPath: root,
+      extensionTestsPath: path.join(root, 'out', 'test', 'integration', r.suite),
+      launchArgs: [
+        r.workspace,
+        '--disable-extensions',
+        '--disable-workspace-trust',
+        '--skip-welcome',
+        '--user-data-dir',
+        path.join(os.tmpdir(), 'meteor-power-vscode-test'),
+      ],
+    });
+  }
 }
 
 main().catch((err) => {

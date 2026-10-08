@@ -1,0 +1,12 @@
+<template name="baseCard">
+  <div class="card js-open">{{title}}</div>
+</template>
+
+<template name="fancyCard">
+  <div class="card fancy js-open">{{title}} {{subtitle}}</div>
+</template>
+
+<template name="cardList">
+  {{> fancyCard}}
+  {{> plainCard}}
+</template>

@@ -77,6 +77,24 @@ export interface TemplatePart {
   members: Member[];
 }
 
+/**
+ * aldeed:template-extension calls linking two templates: `Template.foo.inheritsHelpersFrom('bar')`,
+ * `inheritsEventsFrom`, `inheritsHooksFrom`, `Template.foo.replaces('bar')`, `Template.foo.copyAs('bar')`.
+ */
+export type TemplateLinkKind = 'inheritsHelpersFrom' | 'inheritsEventsFrom' | 'inheritsHooksFrom' | 'replaces' | 'copyAs';
+
+export interface TemplateLink {
+  /** The `foo` in `Template.foo`. */
+  template: string;
+  kind: TemplateLinkKind;
+  /** The template named in the argument (`bar`). */
+  other: string;
+  nameLoc: Loc;
+  /** Inside the quotes of `'bar'`. */
+  otherLoc: Loc;
+  fullLoc: Loc;
+}
+
 /** Any reference to a template from JS: `Template.foo`, `BlazeLayout.render('foo', { main: 'bar' })`. */
 export interface TemplateRef {
   template: string;
@@ -137,6 +155,7 @@ export interface FileFacts {
   defaultExportLocs: Record<string, Loc>;
   templateParts: TemplatePart[];
   templateRefs: TemplateRef[];
+  templateLinks: TemplateLink[];
   globalHelpers: Member[];
   templates: TemplateHtml[];
   htmlUsages: HtmlUsage[];
@@ -157,6 +176,7 @@ export function emptyFacts(file: string): FileFacts {
     defaultExportLocs: {},
     templateParts: [],
     templateRefs: [],
+    templateLinks: [],
     globalHelpers: [],
     templates: [],
     htmlUsages: [],

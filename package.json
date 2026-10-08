@@ -135,6 +135,13 @@
       {
         "command": "meteorPower.openLocation",
         "title": "Open"
+      },
+      {
+        "command": "meteorPower.selectApp",
+        "title": "Show App…",
+        "category": "Meteor Power",
+        "icon": "$(filter)",
+        "enablement": "meteorPower.multiApp"
       }
     ],
     "menus": {
@@ -163,6 +170,11 @@
           "command": "meteorPower.templates.showHierarchy",
           "when": "view == meteorPower.templates && meteorPower.templatesMode != hierarchy",
           "group": "navigation@2"
+        },
+        {
+          "command": "meteorPower.selectApp",
+          "when": "view =~ /^meteorPower\\./ && meteorPower.multiApp",
+          "group": "navigation@0"
         },
         {
           "command": "meteorPower.refresh",
@@ -214,6 +226,10 @@
         {
           "command": "meteorPower.templates.showHierarchy",
           "when": "false"
+        },
+        {
+          "command": "meteorPower.selectApp",
+          "when": "meteorPower.multiApp"
         }
       ]
     },
@@ -236,6 +252,14 @@
           "type": "string",
           "default": "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}",
           "description": "Glob of the files to index."
+        },
+        "meteorPower.packageDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Folders of local Meteor packages **outside the workspace** to index too, like `METEOR_PACKAGE_DIRS` (which is also read). Relative paths start from the first workspace folder. Packages inside the workspace are always indexed."
         },
         "meteorPower.exclude": {
           "type": "array",
