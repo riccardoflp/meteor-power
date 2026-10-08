@@ -1,5 +1,8 @@
 **
 !dist/extension.js
-!resources/**
+!resources/meteor.svg
+!resources/icon.png
 !package.json
 !README.md
+!CHANGELOG.md
+!LICENSE.md
