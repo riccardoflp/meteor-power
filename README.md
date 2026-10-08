@@ -11,6 +11,7 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 | Where | What it does |
 |---|---|
 | `Meteor.call/callAsync/apply/applyAsync('name')` | **Ctrl+Click / F12** goes to the definition in `Meteor.methods` or `new ValidatedMethod({ name })` |
+| `insertTask.call(...)`, `callAsync`, `Tasks.insertTask`, `insertTask.name` | calls through a **ValidatedMethod object** (also imported, aliased or via `import * as`) go to the method too |
 | `Meteor.subscribe('name')`, `this.subscribe(...)` | goes to `Meteor.publish('name')`, including the object form |
 | On a definition | **Ctrl+Click / Shift+F12** lists every call |
 | Inside the string | **completion** of the names, with parameters and docs |

@@ -206,6 +206,20 @@ checks.push([
 ]);
 
 checks.push([
+  'ValidatedMethod objects: Ctrl+Click and references',
+  async () => {
+    const [doc, pos] = await posOf('client/tasksUsage.js', 'Tasks.insertTask', 8);
+    const d = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', doc.uri, pos);
+    // (the built-in TypeScript provider may add the variable declaration)
+    const nameLine = d.find((x) => rel(targetUri(x)) === 'imports/api/tasks/tasks.js' && ('targetUri' in x ? x.targetSelectionRange ?? x.targetRange : x.range).start.line === 4);
+    assert.ok(nameLine, JSON.stringify(d.map((x) => rel(targetUri(x)))));
+    const [def, dpos] = await posOf('imports/api/tasks/tasks.js', "'tasks.insert'", 2);
+    const refs = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeReferenceProvider', def.uri, dpos);
+    assert.equal(refs.filter((r) => rel(r.uri) === 'client/tasksUsage.js').length, 4);
+  },
+]);
+
+checks.push([
   'rename provider: helper in HTML → JS key + HTML usage',
   async () => {
     const [doc, pos] = await posOf('imports/ui/components/userCard.html', '{{fullName}}', 4);

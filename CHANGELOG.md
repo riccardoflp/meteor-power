@@ -32,4 +32,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - constants with the same name are resolved per app
   - side panel filter to show a single app
 - `meteorPower.packageDirs` (and `METEOR_PACKAGE_DIRS`) to index local packages outside the workspace
+- Calls through **ValidatedMethod objects** (`insertTask.call()`, `callAsync`, `callPromise`, `_execute`, namespace and aliased imports, `Meteor.callAsync(insertTask.name)`) are linked to the method: Ctrl+Click, references, CodeLens, hover and diagnostics
 - **aldeed:template-extension**: `inheritsHelpersFrom`, `inheritsEventsFrom`, `replaces` and `copyAs` are followed by definitions, references, completion, rename and the side panel

@@ -87,6 +87,8 @@ export function renameEdits(index: MeteorIndex, t: Target, newName: string): Ren
 
   /** One occurrence of the old name, written as a string, an identifier or a constant reference. */
   const rename = (o: NameSource & { loc: Loc }) => {
+    // `insertTask.call(...)`: the name is in the ValidatedMethod definition, renamed with it
+    if (o.nameKind === 'ref') return;
     if (o.nameKind === 'expr') {
       const locs = a.constantLocs(o, o.loc.file);
       if (!locs.length) error ??= `Cannot find the constant '${o.nameExpr}' that defines this name.`;

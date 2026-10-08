@@ -6,10 +6,13 @@ import { envFromPath, LineMap, makeSnippet, stripBom } from './text';
 // Babel AST nodes; typed loosely on purpose, we only read a handful of fields.
 type Node = any;
 
-const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout/;
+// `.call(` / `.callAsync(`: a file may only call ValidatedMethod objects imported from elsewhere
+const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout|\.(?:call(?:Async|Promise)?|_execute)\s*\(/;
 /** Files that may only export name constants (e.g. `export const METHODS = { UPDATE: 'users.update' }`). */
 const CONSTANTS_CHECK = /\bexport\s+(?:const|let|var|enum|default)\b/;
 const CALL_FNS = new Set(['call', 'callAsync', 'apply', 'applyAsync']);
+/** Methods of a ValidatedMethod object that call it: `insertTask.call(...)`, `insertTask.callAsync(...)`. */
+const OBJECT_CALL_FNS = new Set(['call', 'callAsync', 'callPromise', '_execute']);
 const TEMPLATE_PART_KINDS = new Set<string>(['helpers', 'events', 'onCreated', 'onRendered', 'onDestroyed']);
 /** aldeed:template-extension */
 const TEMPLATE_LINK_KINDS = new Set<string>(['inheritsHelpersFrom', 'inheritsEventsFrom', 'inheritsHooksFrom', 'replaces', 'copyAs']);
@@ -85,9 +88,12 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
    * `const { X, Y: Z } = A` (X → A.X, Z → A.Y), `const M = A.B` (M → A.B).
    */
   const aliases = new Map<string, string>();
+  /** Every local name bound by an import. */
+  const imported = new Set<string>();
 
   collectTopLevel(ast.program);
   collectAliases(ast.program);
+  collectMethodObjects(ast.program);
   walk(ast.program, undefined);
   return facts;
 
@@ -166,6 +172,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       for (const sp of stmt.specifiers ?? []) {
         const local = sp.local?.name;
         if (!local) continue;
+        imported.add(local);
         if (sp.type === 'ImportNamespaceSpecifier') aliases.set(local, '');
         else if (sp.type === 'ImportDefaultSpecifier') {
           const hint = moduleHint(file, spec);
@@ -195,6 +202,37 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
         }
       }
     });
+  }
+
+  /** `const X = new ValidatedMethod({ name })`, also through the project's method definers (`new Method({ name })`). */
+  function collectMethodObjects(program: Node) {
+    forEachNode(program, (n) => {
+      if (n.type !== 'VariableDeclarator' || n.id?.type !== 'Identifier' || !n.init) return;
+      const init = unwrap(n.init);
+      if (init.type !== 'NewExpression' && init.type !== 'CallExpression') return;
+      const c = init.callee;
+      const isValidated = init.type === 'NewExpression' && (isIdent(c, 'ValidatedMethod') || (isMember(c) && propName(c) === 'ValidatedMethod'));
+      const fnPath = exprPath(c);
+      if (!isValidated && !(fnPath && matchesFn(custom.methodDefiners, fnPath))) return;
+      const obj = init.arguments?.[0] && unwrap(init.arguments[0]);
+      if (obj?.type !== 'ObjectExpression') return;
+      const nameProp = findProp(obj, 'name');
+      const name = nameProp && nameOf(nameProp.value);
+      if (name) facts.methodObjects[n.id.name] = { name: name.name, nameExpr: name.nameExpr, nameKind: name.kind };
+    });
+  }
+
+  /**
+   * A method object referenced by `path` (`insertTask`, `Tasks.insertTask`, an imported alias):
+   * the name when it is declared in this file, otherwise `@obj:<variable>` resolved against the workspace.
+   */
+  function methodObjectRef(path: string): { name?: string; nameExpr?: string } | undefined {
+    const local = facts.methodObjects[path];
+    if (local) return local.name !== undefined ? { name: local.name } : { nameExpr: local.nameExpr };
+    if (!imported.has(path.split('.')[0])) return undefined;
+    const expanded = expandAliases(path);
+    if (!expanded || expanded.startsWith('@default(')) return undefined;
+    return { nameExpr: `@obj:${expanded}` };
   }
 
   /** Rewrites the leading alias of a path: `UM.RESET` → `USERS_METHODS.RESET`. */
@@ -300,6 +338,16 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
         addCall(facts.subscriptions, args[0], prop, env);
       }
       return;
+    }
+
+    // insertTask.call({...}), Tasks.insertTask.callAsync({...}): calls through a ValidatedMethod object
+    if (OBJECT_CALL_FNS.has(prop)) {
+      const p = exprPath(obj);
+      const ref = p && methodObjectRef(p);
+      if (ref) {
+        facts.calls.push({ ...ref, nameKind: 'ref', fn: prop, loc: loc(obj.start, obj.end), env, lineText: lm.lineText(lm.pos(obj.start).line) });
+        return;
+      }
     }
 
     // this.subscribe('x'), instance.subscribe('x'), Template.instance().subscribe('x')
@@ -513,6 +561,11 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     const p = raw && expandAliases(raw);
     if (p) {
       const c = facts.constants[p];
+      // `insertTask.name`
+      if (c === undefined && raw.endsWith('.name')) {
+        const ref = methodObjectRef(raw.slice(0, -'.name'.length));
+        if (ref) return { ...ref, kind: 'ref', start: node.start, end: node.end };
+      }
       return { name: c, nameExpr: p, kind: 'expr', start: node.start, end: node.end };
     }
     return undefined;

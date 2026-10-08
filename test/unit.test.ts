@@ -540,3 +540,26 @@ test('apps: rename stays inside the apps that share the name', () => {
   const tied = renameEdits(multi, mAt('admin/server/methods.js', "'admin.purge'", 2), 'web.signup');
   assert.match('error' in tied ? tied.error : '', /already exists/);
 });
+
+// ------------------------------------------------------------------------------ ValidatedMethod objects
+
+test('ValidatedMethod objects: insertTask.call(), namespace and aliased imports, .name', () => {
+  const calls = index.a.calls.get('tasks.insert')!.filter((c) => c.loc.file === F('client/tasksUsage.js'));
+  assert.deepEqual(calls.map((c) => textAt(c.loc)), ['insertTask', 'Tasks.insertTask', 'addTask', 'insertTask.name']);
+  for (const needle of ['insertTask.call', 'Tasks.insertTask', 'addTask.call', 'insertTask.name']) {
+    const t = at('client/tasksUsage.js', needle, 1);
+    assert.equal(t.type === 'method' && t.name, 'tasks.insert', needle);
+    assert.deepEqual(where(definitions(index, t).map((d) => d.loc)), ['imports/api/tasks/tasks.js']);
+  }
+  // debounce.call() is not a method call and is not reported
+  assert.deepEqual(noProblems(index, 'client/tasksUsage.js'), []);
+  // references from the definition include the calls through the object
+  const refs = references(index, at('imports/api/tasks/tasks.js', "'tasks.insert'", 2), false);
+  assert.equal(where(refs).filter((f) => f === 'client/tasksUsage.js').length, 4);
+});
+
+test('rename a ValidatedMethod: the name string changes, the calls through the object are untouched', () => {
+  const { edits, after } = doRename('client/tasksUsage.js', 'addTask.call', 1, 'tasks.add');
+  assert.deepEqual(where(edits.map((e) => e.loc)), ['imports/api/tasks/tasks.js']);
+  assert.equal(after.a.calls.get('tasks.add')!.filter((c) => c.loc.file === F('client/tasksUsage.js')).length, 4);
+});

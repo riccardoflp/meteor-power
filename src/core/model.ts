@@ -26,12 +26,13 @@ export interface NameSource {
   /**
    * How the name is written at `loc`, which decides how to rename it:
    * `string` → the text inside quotes, `ident` → an identifier (object key, `Template.foo`),
-   * `expr` → a reference to a constant (the constant's string is renamed instead).
+   * `expr` → a reference to a constant (the constant's string is renamed instead),
+   * `ref` → a reference to a method object (`insertTask.call(...)`): nothing to rename there.
    */
   nameKind: NameKind;
 }
 
-export type NameKind = 'string' | 'ident' | 'expr';
+export type NameKind = 'string' | 'ident' | 'expr' | 'ref';
 
 export interface MethodDef extends NameSource {
   kind: 'method' | 'validated' | 'publication';
@@ -150,6 +151,11 @@ export interface FileFacts {
   constants: Record<string, string>;
   /** `export default` as constants: `''` for a string, `Y.Z` for an object; resolved by file path. */
   defaultExport: Record<string, string>;
+  /**
+   * Variables holding a method object, by variable name: `const insertTask = new ValidatedMethod({ name: 'tasks.insert' })`.
+   * Calls like `insertTask.call(...)` in other files are resolved through them.
+   */
+  methodObjects: Record<string, NameSource>;
   /** Where each constant / default export string is written (text inside the quotes), for renaming. */
   constantLocs: Record<string, Loc>;
   defaultExportLocs: Record<string, Loc>;
@@ -172,6 +178,7 @@ export function emptyFacts(file: string): FileFacts {
     subscriptions: [],
     constants: {},
     defaultExport: {},
+    methodObjects: {},
     constantLocs: {},
     defaultExportLocs: {},
     templateParts: [],

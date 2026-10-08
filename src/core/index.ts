@@ -212,6 +212,9 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
     if (Object.keys(f.defaultExport).length) defaults.push({ id: moduleId(f.file), file: f.file, values: f.defaultExport, locs: f.defaultExportLocs });
   }
   const byFile = new Map(all.map((f) => [f.file, f]));
+  // method objects (`const insertTask = new ValidatedMethod(...)`) by variable name
+  const methodObjects = new Map<string, { ns: NameSource; file: string }[]>();
+  for (const f of all) for (const [k, ns] of Object.entries(f.methodObjects)) push(methodObjects, k, { ns, file: f.file });
 
   /** `@default(<module hint>).A.B` → the default exports of that module having `A.B`. */
   const defaultsFor = (expr: string, scope: Scope) => {
@@ -249,8 +252,18 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
     const scope = file === undefined ? null : index.scopeOf(file);
     const cacheKey = `${scope ? [...scope].join('|') : '*'}#${expr}`;
     if (resolveCache.has(cacheKey)) return resolveCache.get(cacheKey);
-    const found = expr.startsWith('@default(') ? defaultsFor(expr, scope) : constantsFor(expr, scope);
-    const values = new Set(found.map((c) => c.value));
+    let values: Set<string | undefined>;
+    if (expr.startsWith('@obj:')) {
+      // the method object with that variable name (`Tasks.insertTask` → `insertTask`)
+      resolveCache.set(cacheKey, undefined); // no cycles through constants pointing back here
+      const segs = expr.slice('@obj:'.length).split('.');
+      let objs: { ns: NameSource; file: string }[] = [];
+      for (let i = 0; i < segs.length && !objs.length; i++) objs = (methodObjects.get(segs.slice(i).join('.')) ?? []).filter((o) => index.inScope(scope, o.file));
+      values = new Set(objs.map((o) => resolve(o.ns, o.file)));
+    } else {
+      const found = expr.startsWith('@default(') ? defaultsFor(expr, scope) : constantsFor(expr, scope);
+      values = new Set(found.map((c) => c.value));
+    }
     const result = values.size === 1 ? [...values][0] : undefined;
     resolveCache.set(cacheKey, result);
     return result;
