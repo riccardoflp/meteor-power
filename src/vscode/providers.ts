@@ -310,7 +310,7 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
   }
 
   provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
-    if (!vscode.workspace.getConfiguration('meteorpower').get<boolean>('codeLens.enabled', true)) return [];
+    if (!vscode.workspace.getConfiguration('meteorPower').get<boolean>('codeLens.enabled', true)) return [];
     this.indexer.syncDocument(doc);
     const index = this.indexer.index;
     const f = index.facts(this.indexer.keyOf(doc.uri.fsPath));
@@ -346,7 +346,7 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
       seen.add(p.template);
       const html = a.templates.get(p.template)?.[0];
       const range = toRange(p.nameLoc);
-      if (html) lenses.push(new vscode.CodeLens(range, { title: '$(code) HTML', command: 'meteorpower.openLocation', arguments: [html.loc] }));
+      if (html) lenses.push(new vscode.CodeLens(range, { title: '$(code) HTML', command: 'meteorPower.openLocation', arguments: [html.loc] }));
       refsLens(p.nameLoc, templateUsages(a, p.template), 'use', 'uses');
     }
 
@@ -360,7 +360,7 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
         lenses.push(
           new vscode.CodeLens(range, {
             title: `$(symbol-method) JS · ${helpers} ${helpers === 1 ? 'helper' : 'helpers'} · ${events} ${events === 1 ? 'event' : 'events'}`,
-            command: 'meteorpower.openJs',
+            command: 'meteorPower.openJs',
             arguments: [t.name],
           }),
         );
@@ -376,13 +376,13 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
 // ---------------------------------------------------------------------------------------- Diagnostics
 
 export class MeteorDiagnostics implements vscode.Disposable {
-  private readonly collection = vscode.languages.createDiagnosticCollection('meteorpower');
+  private readonly collection = vscode.languages.createDiagnosticCollection('meteorPower');
 
   constructor(private readonly indexer: WorkspaceIndexer) {}
 
   refresh() {
     this.collection.clear();
-    const cfg = vscode.workspace.getConfiguration('meteorpower');
+    const cfg = vscode.workspace.getConfiguration('meteorPower');
     if (!cfg.get<boolean>('diagnostics.enabled', true)) return;
     const severity = {
       error: vscode.DiagnosticSeverity.Error,
@@ -400,7 +400,7 @@ export class MeteorDiagnostics implements vscode.Disposable {
       if (!f.calls.length && !f.subscriptions.length && !f.htmlUsages.length) continue;
       const list = problems(index, f.file, opts).map((p) => {
         const d = new vscode.Diagnostic(toRange(p.loc), p.message, severity);
-        d.source = 'MeteorPower';
+        d.source = 'Meteor Power';
         d.code = p.code;
         return d;
       });

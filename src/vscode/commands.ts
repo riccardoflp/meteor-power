@@ -15,7 +15,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
 
   const pickAndOpen = async (items: LocPick[], placeHolder: string) => {
     if (!items.length) {
-      vscode.window.showInformationMessage('MeteorPower: nothing to show.');
+      vscode.window.showInformationMessage('Meteor Power: nothing to show.');
       return;
     }
     if (items.length === 1) return openLoc(items[0].loc);
@@ -50,29 +50,29 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
 
   const setTemplatesMode = (mode: TemplatesMode) => {
     templatesTree.setMode(mode);
-    void ctx.workspaceState.update('meteorpower.templatesMode', mode);
-    void vscode.commands.executeCommand('setContext', 'meteorpower.templatesMode', mode);
+    void ctx.workspaceState.update('meteorPower.templatesMode', mode);
+    void vscode.commands.executeCommand('setContext', 'meteorPower.templatesMode', mode);
   };
 
   ctx.subscriptions.push(
-    vscode.commands.registerCommand('meteorpower.refresh', () => indexer.rescan()),
+    vscode.commands.registerCommand('meteorPower.refresh', () => indexer.rescan()),
 
-    vscode.commands.registerCommand('meteorpower.openLocation', (loc: Loc) => openLoc(loc)),
+    vscode.commands.registerCommand('meteorPower.openLocation', (loc: Loc) => openLoc(loc)),
 
-    vscode.commands.registerCommand('meteorpower.openHtml', (arg: unknown) => {
+    vscode.commands.registerCommand('meteorPower.openHtml', (arg: unknown) => {
       const name = nameOfArg(arg);
       if (name) return openTemplateHtml(name);
     }),
 
-    vscode.commands.registerCommand('meteorpower.openJs', (arg: unknown) => {
+    vscode.commands.registerCommand('meteorPower.openJs', (arg: unknown) => {
       const name = nameOfArg(arg);
       if (name) return openTemplateJs(name);
     }),
 
-    vscode.commands.registerCommand('meteorpower.templates.showHierarchy', () => setTemplatesMode('hierarchy')),
-    vscode.commands.registerCommand('meteorpower.templates.showFlat', () => setTemplatesMode('flat')),
+    vscode.commands.registerCommand('meteorPower.templates.showHierarchy', () => setTemplatesMode('hierarchy')),
+    vscode.commands.registerCommand('meteorPower.templates.showFlat', () => setTemplatesMode('flat')),
 
-    vscode.commands.registerCommand('meteorpower.goToMethod', async () => {
+    vscode.commands.registerCommand('meteorPower.goToMethod', async () => {
       await indexer.ready;
       const items: LocPick[] = [];
       for (const [name, defs] of index.a.methods) {
@@ -90,7 +90,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       return pickAndOpen(items, 'Search a Meteor method');
     }),
 
-    vscode.commands.registerCommand('meteorpower.goToPublication', async () => {
+    vscode.commands.registerCommand('meteorPower.goToPublication', async () => {
       await indexer.ready;
       const items: LocPick[] = [];
       for (const [name, defs] of index.a.publications) {
@@ -103,7 +103,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       return pickAndOpen(items, 'Search a publication');
     }),
 
-    vscode.commands.registerCommand('meteorpower.goToTemplate', async () => {
+    vscode.commands.registerCommand('meteorPower.goToTemplate', async () => {
       await indexer.ready;
       const a = index.a;
       const items: LocPick[] = [];
@@ -124,7 +124,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       return pickAndOpen(items, 'Search a Blaze template');
     }),
 
-    vscode.commands.registerCommand('meteorpower.switchTemplateFile', async () => {
+    vscode.commands.registerCommand('meteorPower.switchTemplateFile', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
       const doc = editor.document;
@@ -137,13 +137,13 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
         else if (names.length > 1) name = await vscode.window.showQuickPick(names, { placeHolder: 'Which template?' });
       }
       if (!name) {
-        vscode.window.showInformationMessage('MeteorPower: no Blaze template in this file.');
+        vscode.window.showInformationMessage('Meteor Power: no Blaze template in this file.');
         return;
       }
       const isHtml = file.toLowerCase().endsWith('.html');
       const targets = isHtml ? templateJsDefs(index.a, name) : templateHtmlDefs(index.a, name);
       if (!targets.length) {
-        vscode.window.showInformationMessage(`MeteorPower: no ${isHtml ? 'JS' : 'HTML'} file found for template '${name}'.`);
+        vscode.window.showInformationMessage(`Meteor Power: no ${isHtml ? 'JS' : 'HTML'} file found for template '${name}'.`);
         return;
       }
       return isHtml ? openTemplateJs(name) : openTemplateHtml(name);

@@ -37,7 +37,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
         this.versions.delete(d.uri.fsPath);
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('meteorpower.include') || e.affectsConfiguration('meteorpower.exclude')) void this.rescan();
+        if (e.affectsConfiguration('meteorPower.include') || e.affectsConfiguration('meteorPower.exclude')) void this.rescan();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => void this.rescan()),
     );
@@ -45,14 +45,14 @@ export class WorkspaceIndexer implements vscode.Disposable {
 
   rescan(): Promise<void> {
     this.ready = Promise.resolve(
-      vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'MeteorPower: indexing…' }, () => this.fullScan()),
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Meteor Power: indexing…' }, () => this.fullScan()),
     );
     return this.ready;
   }
 
   private async fullScan() {
     const id = ++this.scanId;
-    const cfg = vscode.workspace.getConfiguration('meteorpower');
+    const cfg = vscode.workspace.getConfiguration('meteorPower');
     const include = cfg.get<string>('include') || '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}';
     const exclude = cfg.get<string[]>('exclude') ?? [];
     this.excludes = exclude.map(globToRegExp);

@@ -124,7 +124,7 @@ const checks: [string, () => Promise<void>][] = [
       const [doc, pos] = await posOf('imports/ui/components/userCard.html', 'Save<');
       const editor = await vscode.window.showTextDocument(doc);
       editor.selection = new vscode.Selection(pos, pos);
-      await vscode.commands.executeCommand('meteorpower.switchTemplateFile');
+      await vscode.commands.executeCommand('meteorPower.switchTemplateFile');
       assert.equal(rel(vscode.window.activeTextEditor!.document.uri), 'client/legacy/logic/userCard.js');
     },
   ],
@@ -190,7 +190,7 @@ checks.push([
 ]);
 
 export async function run(): Promise<void> {
-  const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'meteorpower')!;
+  const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'meteor-power')!;
   api = await ext.activate();
   await api.ready();
   // diagnostics are refreshed with a debounce

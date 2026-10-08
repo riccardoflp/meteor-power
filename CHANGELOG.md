@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Files reachable through symlinked folders (e.g. shared imports linked into several apps) are indexed once, under their real path, instead of once per link: no more duplicated methods, publications and templates
-
 ## [0.1.0] - 2026-10-08
 
 ### Added
@@ -25,3 +21,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Diagnostics for calls to unknown methods, publications and templates, with configurable ignore lists
 - Side panel with methods grouped by namespace, publications, and templates in hierarchical (inclusion tree) or flat view
 - Workspace symbols (Ctrl+T) for methods, publications, templates and global helpers
+- Files reachable through symlinked folders (e.g. shared imports linked into several apps) are indexed once, under their real path

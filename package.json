@@ -1,13 +1,13 @@
 {
-  "name": "meteorpower",
-  "displayName": "MeteorPower",
+  "name": "meteor-power",
+  "displayName": "Meteor Power",
   "description": "Navigate Meteor and Blaze code: go to definition, references, hover and completion for methods, publications, templates and helpers, plus a side panel.",
   "version": "0.1.0",
   "publisher": "RiccardoFilippozzi",
   "license": "MIT",
-  "repository": "https://github.com/riccardoflp/meteorpower",
+  "repository": "https://github.com/riccardoflp/meteor-power",
   "bugs": {
-    "url": "https://github.com/riccardoflp/meteorpower/issues"
+    "url": "https://github.com/riccardoflp/meteor-power/issues"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -39,190 +39,190 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "meteorpower",
-          "title": "MeteorPower",
+          "id": "meteorPower",
+          "title": "Meteor Power",
           "icon": "resources/meteor.svg"
         }
       ]
     },
     "views": {
-      "meteorpower": [
+      "meteorPower": [
         {
-          "id": "meteorpower.methods",
+          "id": "meteorPower.methods",
           "name": "Methods"
         },
         {
-          "id": "meteorpower.publications",
+          "id": "meteorPower.publications",
           "name": "Publications"
         },
         {
-          "id": "meteorpower.templates",
+          "id": "meteorPower.templates",
           "name": "Templates"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "meteorpower.methods",
-        "contents": "No Meteor methods found (yet).\n[Reindex workspace](command:meteorpower.refresh)"
+        "view": "meteorPower.methods",
+        "contents": "No Meteor methods found (yet).\n[Reindex workspace](command:meteorPower.refresh)"
       },
       {
-        "view": "meteorpower.publications",
+        "view": "meteorPower.publications",
         "contents": "No publications found."
       },
       {
-        "view": "meteorpower.templates",
+        "view": "meteorPower.templates",
         "contents": "No Blaze templates found."
       }
     ],
     "commands": [
       {
-        "command": "meteorpower.refresh",
+        "command": "meteorPower.refresh",
         "title": "Reindex Workspace",
-        "category": "MeteorPower",
+        "category": "Meteor Power",
         "icon": "$(refresh)"
       },
       {
-        "command": "meteorpower.goToMethod",
+        "command": "meteorPower.goToMethod",
         "title": "Go to Method…",
-        "category": "MeteorPower",
+        "category": "Meteor Power",
         "icon": "$(search)"
       },
       {
-        "command": "meteorpower.goToPublication",
+        "command": "meteorPower.goToPublication",
         "title": "Go to Publication…",
-        "category": "MeteorPower",
+        "category": "Meteor Power",
         "icon": "$(search)"
       },
       {
-        "command": "meteorpower.goToTemplate",
+        "command": "meteorPower.goToTemplate",
         "title": "Go to Template…",
-        "category": "MeteorPower",
+        "category": "Meteor Power",
         "icon": "$(search)"
       },
       {
-        "command": "meteorpower.switchTemplateFile",
+        "command": "meteorPower.switchTemplateFile",
         "title": "Switch Between Template HTML and JS",
-        "category": "MeteorPower"
+        "category": "Meteor Power"
       },
       {
-        "command": "meteorpower.templates.showHierarchy",
+        "command": "meteorPower.templates.showHierarchy",
         "title": "Hierarchical View (Inclusions)",
-        "category": "MeteorPower",
+        "category": "Meteor Power",
         "icon": "$(list-tree)"
       },
       {
-        "command": "meteorpower.templates.showFlat",
+        "command": "meteorPower.templates.showFlat",
         "title": "Flat View",
-        "category": "MeteorPower",
+        "category": "Meteor Power",
         "icon": "$(list-flat)"
       },
       {
-        "command": "meteorpower.openHtml",
+        "command": "meteorPower.openHtml",
         "title": "Open HTML",
         "icon": "$(code)"
       },
       {
-        "command": "meteorpower.openJs",
+        "command": "meteorPower.openJs",
         "title": "Open JS",
         "icon": "$(symbol-method)"
       },
       {
-        "command": "meteorpower.openLocation",
+        "command": "meteorPower.openLocation",
         "title": "Open"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "meteorpower.goToMethod",
-          "when": "view == meteorpower.methods",
+          "command": "meteorPower.goToMethod",
+          "when": "view == meteorPower.methods",
           "group": "navigation@1"
         },
         {
-          "command": "meteorpower.goToPublication",
-          "when": "view == meteorpower.publications",
+          "command": "meteorPower.goToPublication",
+          "when": "view == meteorPower.publications",
           "group": "navigation@1"
         },
         {
-          "command": "meteorpower.goToTemplate",
-          "when": "view == meteorpower.templates",
+          "command": "meteorPower.goToTemplate",
+          "when": "view == meteorPower.templates",
           "group": "navigation@1"
         },
         {
-          "command": "meteorpower.templates.showFlat",
-          "when": "view == meteorpower.templates && meteorpower.templatesMode == hierarchy",
+          "command": "meteorPower.templates.showFlat",
+          "when": "view == meteorPower.templates && meteorPower.templatesMode == hierarchy",
           "group": "navigation@2"
         },
         {
-          "command": "meteorpower.templates.showHierarchy",
-          "when": "view == meteorpower.templates && meteorpower.templatesMode != hierarchy",
+          "command": "meteorPower.templates.showHierarchy",
+          "when": "view == meteorPower.templates && meteorPower.templatesMode != hierarchy",
           "group": "navigation@2"
         },
         {
-          "command": "meteorpower.refresh",
-          "when": "view =~ /^meteorpower\\./",
+          "command": "meteorPower.refresh",
+          "when": "view =~ /^meteorPower\\./",
           "group": "navigation@9"
         }
       ],
       "view/item/context": [
         {
-          "command": "meteorpower.openHtml",
-          "when": "view == meteorpower.templates && viewItem =~ /^template.*\\.html/",
+          "command": "meteorPower.openHtml",
+          "when": "view == meteorPower.templates && viewItem =~ /^template.*\\.html/",
           "group": "inline@1"
         },
         {
-          "command": "meteorpower.openJs",
-          "when": "view == meteorpower.templates && viewItem =~ /^template.*\\.js/",
+          "command": "meteorPower.openJs",
+          "when": "view == meteorPower.templates && viewItem =~ /^template.*\\.js/",
           "group": "inline@2"
         }
       ],
       "editor/context": [
         {
-          "command": "meteorpower.switchTemplateFile",
+          "command": "meteorPower.switchTemplateFile",
           "when": "resourceExtname =~ /^\\.(html|js|jsx|ts|tsx|mjs)$/",
           "group": "navigation@90"
         }
       ],
       "commandPalette": [
         {
-          "command": "meteorpower.openHtml",
+          "command": "meteorPower.openHtml",
           "when": "false"
         },
         {
-          "command": "meteorpower.openJs",
+          "command": "meteorPower.openJs",
           "when": "false"
         },
         {
-          "command": "meteorpower.openLocation",
+          "command": "meteorPower.openLocation",
           "when": "false"
         },
         {
-          "command": "meteorpower.templates.showFlat",
+          "command": "meteorPower.templates.showFlat",
           "when": "false"
         },
         {
-          "command": "meteorpower.templates.showHierarchy",
+          "command": "meteorPower.templates.showHierarchy",
           "when": "false"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "meteorpower.switchTemplateFile",
+        "command": "meteorPower.switchTemplateFile",
         "key": "alt+o",
         "when": "editorTextFocus && resourceExtname =~ /^\\.(html|js|jsx|ts|tsx|mjs)$/"
       }
     ],
     "configuration": {
-      "title": "MeteorPower",
+      "title": "Meteor Power",
       "properties": {
-        "meteorpower.include": {
+        "meteorPower.include": {
           "type": "string",
           "default": "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}",
           "description": "Glob of the files to index."
         },
-        "meteorpower.exclude": {
+        "meteorPower.exclude": {
           "type": "array",
           "items": {
             "type": "string"
@@ -239,17 +239,17 @@
           ],
           "description": "Globs of the files to exclude from indexing."
         },
-        "meteorpower.codeLens.enabled": {
+        "meteorPower.codeLens.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Show CodeLens (call counts, HTML/JS links) above methods, publications and templates."
         },
-        "meteorpower.diagnostics.enabled": {
+        "meteorPower.diagnostics.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Report calls to undefined methods/publications and inclusions of undefined templates."
         },
-        "meteorpower.diagnostics.severity": {
+        "meteorPower.diagnostics.severity": {
           "type": "string",
           "enum": [
             "error",
@@ -260,7 +260,7 @@
           "default": "warning",
           "description": "Severity of the reported problems."
         },
-        "meteorpower.diagnostics.ignoreMethods": {
+        "meteorPower.diagnostics.ignoreMethods": {
           "type": "array",
           "items": {
             "type": "string"
@@ -268,7 +268,7 @@
           "default": [],
           "description": "Methods not to report even if they are not defined in the workspace (e.g. defined by packages). Supports * as a wildcard, e.g. \"accounts.*\"."
         },
-        "meteorpower.diagnostics.ignorePublications": {
+        "meteorPower.diagnostics.ignorePublications": {
           "type": "array",
           "items": {
             "type": "string"
@@ -276,7 +276,7 @@
           "default": [],
           "description": "Publications not to report. Supports * as a wildcard."
         },
-        "meteorpower.diagnostics.ignoreTemplates": {
+        "meteorPower.diagnostics.ignoreTemplates": {
           "type": "array",
           "items": {
             "type": "string"

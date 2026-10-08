@@ -14,7 +14,7 @@ const ENV_ICON: Record<Env, vscode.ThemeIcon> = {
 const ENV_TEXT: Record<Env, string> = { server: 'server', client: 'client', both: 'client+server' };
 
 function openCommand(loc: Loc, title = 'Open'): vscode.Command {
-  return { command: 'meteorpower.openLocation', title, arguments: [loc] };
+  return { command: 'meteorPower.openLocation', title, arguments: [loc] };
 }
 
 // ------------------------------------------------------------------------- Methods / Publications

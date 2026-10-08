@@ -24,33 +24,33 @@ export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
   const diagnostics = new MeteorDiagnostics(indexer);
   ctx.subscriptions.push(diagnostics, indexer.onDidChange(() => diagnostics.refresh()));
 
-  const mode = ctx.workspaceState.get<TemplatesMode>('meteorpower.templatesMode', 'hierarchy');
-  void vscode.commands.executeCommand('setContext', 'meteorpower.templatesMode', mode);
+  const mode = ctx.workspaceState.get<TemplatesMode>('meteorPower.templatesMode', 'hierarchy');
+  void vscode.commands.executeCommand('setContext', 'meteorPower.templatesMode', mode);
   const templatesTree = new TemplatesTree(indexer, mode);
   const methodsTree = new NamesTree(indexer, 'methods');
   const publicationsTree = new NamesTree(indexer, 'publications');
   ctx.subscriptions.push(
-    vscode.window.createTreeView('meteorpower.methods', { treeDataProvider: methodsTree, showCollapseAll: true }),
-    vscode.window.createTreeView('meteorpower.publications', { treeDataProvider: publicationsTree, showCollapseAll: true }),
-    vscode.window.createTreeView('meteorpower.templates', { treeDataProvider: templatesTree, showCollapseAll: true }),
+    vscode.window.createTreeView('meteorPower.methods', { treeDataProvider: methodsTree, showCollapseAll: true }),
+    vscode.window.createTreeView('meteorPower.publications', { treeDataProvider: publicationsTree, showCollapseAll: true }),
+    vscode.window.createTreeView('meteorPower.templates', { treeDataProvider: templatesTree, showCollapseAll: true }),
   );
 
   registerCommands(ctx, indexer, templatesTree);
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
-  status.command = 'workbench.view.extension.meteorpower';
+  status.command = 'workbench.view.extension.meteorPower';
   const updateStatus = () => {
     const a = index.a;
     status.text = `$(zap) ${a.methods.size} methods · ${a.templateNames.size} templates`;
-    status.tooltip = `MeteorPower: ${a.methods.size} methods, ${a.publications.size} publications, ${a.templateNames.size} templates`;
+    status.tooltip = `Meteor Power: ${a.methods.size} methods, ${a.publications.size} publications, ${a.templateNames.size} templates`;
     status.show();
   };
   ctx.subscriptions.push(status, indexer.onDidChange(updateStatus));
 
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('meteorpower.diagnostics')) diagnostics.refresh();
-      if (e.affectsConfiguration('meteorpower.codeLens')) codeLens.refresh();
+      if (e.affectsConfiguration('meteorPower.diagnostics')) diagnostics.refresh();
+      if (e.affectsConfiguration('meteorPower.codeLens')) codeLens.refresh();
     }),
   );
 

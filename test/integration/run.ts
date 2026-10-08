@@ -27,7 +27,7 @@ async function main() {
       '--disable-workspace-trust',
       '--skip-welcome',
       '--user-data-dir',
-      path.join(os.tmpdir(), 'meteorpower-vscode-test'),
+      path.join(os.tmpdir(), 'meteor-power-vscode-test'),
     ],
   });
 }
