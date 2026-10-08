@@ -1,68 +1,68 @@
 # MeteorPower
 
-Estensione VS Code per navigare progetti **Meteor 3** e **Blaze** come se i nomi fossero simboli veri e non stringhe.
+Navigate **Meteor 3** and **Blaze** projects as if names were real symbols instead of strings.
 
-Indicizza tutto il workspace e collega i pezzi **per nome**, quindi funziona anche se HTML, JS, metodi e costanti stanno in cartelle diverse.
+MeteorPower indexes the whole workspace and links things **by name**, so it works even when HTML, JS, methods and constants live in different folders.
 
-## Metodi e publication
+## Methods and publications
 
-| Dove | Cosa fa |
+| Where | What it does |
 |---|---|
-| `Meteor.call/callAsync/apply/applyAsync('nome')` | **Ctrl+Click / F12**: vai alla definizione in `Meteor.methods` o `new ValidatedMethod({ name })` |
-| `Meteor.subscribe('nome')`, `this.subscribe(...)` | vai a `Meteor.publish('nome')` (anche nella forma a oggetto) |
-| Sulla definizione | **Ctrl+Click / Shift+F12**: elenco di tutte le chiamate |
-| Dentro la stringa | **autocompletamento** dei nomi con parametri e documentazione |
-| Hover | firma, ambiente (server/client), file, JSDoc, numero di chiamate |
-| CodeLens | `N chiamate` sopra ogni metodo, `N subscribe` sopra ogni publication |
-| Diagnostica | warning su chiamate a metodi o publication inesistenti |
+| `Meteor.call/callAsync/apply/applyAsync('name')` | **Ctrl+Click / F12** goes to the definition in `Meteor.methods` or `new ValidatedMethod({ name })` |
+| `Meteor.subscribe('name')`, `this.subscribe(...)` | goes to `Meteor.publish('name')`, including the object form |
+| On a definition | **Ctrl+Click / Shift+F12** lists every call |
+| Inside the string | **completion** of the names, with parameters and docs |
+| Hover | signature, environment (server/client), file, JSDoc, number of calls |
+| CodeLens | `N calls` above each method, `N subscriptions` above each publication |
+| Diagnostics | warning on calls to undefined methods or publications |
 
-I nomi possono essere anche **costanti**, risolte in tutto il progetto:
-`Meteor.callAsync(USERS_METHODS.RESET)`, `[USERS_METHODS.RESET]() {}`, `import * as C ...; C.USERS_METHODS.RESET`, enum TypeScript e `Object.freeze({...})`.
+Names can also be **constants**, resolved across the whole workspace:
+`Meteor.callAsync(USERS_METHODS.RESET)`, `[USERS_METHODS.RESET]() {}`, `import * as C ...; C.USERS_METHODS.RESET`, TypeScript enums and `Object.freeze({...})`.
 
 ## Blaze
 
-| Dove | Cosa fa |
+| Where | What it does |
 |---|---|
-| `{{helper}}` nell'HTML | vai a `Template.x.helpers({ helper })`, altrimenti a `Template.registerHelper('helper')` |
-| `{{> nome}}`, `{{#nome}}`, `{{> Template.dynamic template="nome"}}` | vai a `<template name="nome">` |
-| `<template name="x">` | vai al JS del template (helpers/events/onCreated…) |
-| `Template.x` nel JS | vai all'HTML |
-| `BlazeLayout.render('layout', { main: 'page' })` | vai ai template |
-| Chiave di un event map `'click .js-save'` | vai agli elementi con quella classe/id nell'HTML |
-| Sulla definizione di un helper | trova dove è usato nell'HTML |
-| Dentro `{{ }}` | autocompletamento degli helper del template corrente e di quelli globali; dopo `{{>` dei template |
-| **Alt+O** | passa dall'HTML al JS del template (e viceversa) |
+| `{{helper}}` in HTML | goes to `Template.x.helpers({ helper })`, otherwise to `Template.registerHelper('helper')` |
+| `{{> name}}`, `{{#name}}`, `{{> Template.dynamic template="name"}}` | goes to `<template name="name">` |
+| `<template name="x">` | goes to the template JS (helpers, events, onCreated, …) |
+| `Template.x` in JS | goes to the HTML |
+| `BlazeLayout.render('layout', { main: 'page' })` | goes to the templates |
+| Event map key `'click .js-save'` | goes to the elements with that class or id in the HTML |
+| On a helper definition | finds where it is used in the HTML |
+| Inside `{{ }}` | completion of the current template's helpers and the global ones; template names after `{{>` |
+| **Alt+O** | switches between the HTML and the JS of the template |
 
-Le variabili locali (`{{#each item in items}}`, `{{#let}}`) e i campi del data context non vengono segnalati come errori.
+Local variables (`{{#each item in items}}`, `{{#let}}`) and data context fields are never reported as errors.
 
-## Pannello laterale
+## Side panel
 
-Icona MeteorPower nella Activity Bar:
+The MeteorPower icon in the Activity Bar opens:
 
-- **Metodi**: albero per namespace (`users.profile.save` → users › profile › save), con ambiente, numero di chiamate e la lista dei punti in cui sono chiamati. Un gruppo a parte raccoglie le chiamate a metodi non definiti.
-- **Publication**: stessa struttura, con le subscribe.
-- **Template**:
-  - vista **gerarchica**, cioè l'albero delle inclusioni `{{> …}}`
-  - vista **piatta**
-  - per ogni template: helper, eventi, lifecycle; pulsanti per aprire HTML o JS; gruppo degli helper globali
+- **Methods**: a tree grouped by namespace (`users.profile.save` → users › profile › save), with environment, number of calls and the list of call sites. A separate group collects calls to undefined methods.
+- **Publications**: same structure, with the subscriptions.
+- **Templates**:
+  - **hierarchical** view, i.e. the tree of `{{> …}}` inclusions
+  - **flat** view
+  - for each template: helpers, events and lifecycle callbacks, buttons to open the HTML or the JS, and a group with the global helpers
 
-Comandi rapidi (Ctrl+Shift+P): *MeteorPower: Vai al metodo… / alla publication… / al template…*.
-Anche **Ctrl+T** trova metodi, publication e template.
+Quick commands (Ctrl+Shift+P): *MeteorPower: Go to Method… / Go to Publication… / Go to Template…*.
+**Ctrl+T** also finds methods, publications and templates.
 
-## Impostazioni
+## Settings
 
-- `meteorpower.include` / `meteorpower.exclude`: quali file indicizzare.
-- `meteorpower.diagnostics.enabled`, `meteorpower.diagnostics.severity`: attiva le segnalazioni e ne sceglie la gravità.
-- `meteorpower.diagnostics.ignoreMethods` / `ignorePublications` / `ignoreTemplates`: nomi forniti da pacchetti, da non segnalare. Supportano `*`, es. `"accounts.*"`.
-- `meteorpower.codeLens.enabled`: mostra o nasconde i CodeLens.
+- `meteorpower.include` / `meteorpower.exclude`: which files to index.
+- `meteorpower.diagnostics.enabled`, `meteorpower.diagnostics.severity`: turn the reported problems on or off and choose their severity.
+- `meteorpower.diagnostics.ignoreMethods` / `ignorePublications` / `ignoreTemplates`: names provided by packages that should not be reported. They support `*`, e.g. `"accounts.*"`.
+- `meteorpower.codeLens.enabled`: show or hide the CodeLens.
 
-## Sviluppo
+## Development
 
 ```bash
 npm install
-npm test                  # test unitari sul core (parser + indice)
-npm run test:integration  # test dentro VS Code (usa il VS Code installato)
-npm run package           # crea meteorpower-<versione>.vsix
+npm test                  # unit tests on the core (parsers + index)
+npm run test:integration  # tests inside VS Code (uses the installed VS Code)
+npm run package           # builds meteorpower-<version>.vsix
 ```
 
-Per provarla in debug: apri questa cartella in VS Code e premi **F5**.
+To debug it, open this folder in VS Code and press **F5**.

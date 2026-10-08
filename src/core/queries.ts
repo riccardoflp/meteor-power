@@ -221,16 +221,16 @@ export function problems(index: MeteorIndex, file: string, opts: DiagnosticOptio
   for (const c of f.calls) {
     const name = a.resolve(c);
     if (name === undefined || a.methods.has(name) || ignored(opts.ignoreMethods, name)) continue;
-    out.push({ loc: c.loc, message: `Metodo Meteor '${name}' non trovato nel progetto.`, code: 'unknown-method' });
+    out.push({ loc: c.loc, message: `Meteor method '${name}' is not defined in the workspace.`, code: 'unknown-method' });
   }
   for (const c of f.subscriptions) {
     const name = a.resolve(c);
     if (name === undefined || a.publications.has(name) || ignored(opts.ignorePublications, name)) continue;
-    out.push({ loc: c.loc, message: `Publication '${name}' non trovata nel progetto.`, code: 'unknown-publication' });
+    out.push({ loc: c.loc, message: `Publication '${name}' is not defined in the workspace.`, code: 'unknown-publication' });
   }
   for (const u of f.htmlUsages) {
     if (u.kind !== 'inclusion' || a.templateNames.has(u.name) || ignored(opts.ignoreTemplates, u.name)) continue;
-    out.push({ loc: u.loc, message: `Template '${u.name}' non trovato nel progetto.`, code: 'unknown-template' });
+    out.push({ loc: u.loc, message: `Template '${u.name}' is not defined in the workspace.`, code: 'unknown-template' });
   }
   return out;
 }

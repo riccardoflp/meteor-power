@@ -13,7 +13,7 @@ const ENV_ICON: Record<Env, vscode.ThemeIcon> = {
 };
 const ENV_TEXT: Record<Env, string> = { server: 'server', client: 'client', both: 'client+server' };
 
-function openCommand(loc: Loc, title = 'Apri'): vscode.Command {
+function openCommand(loc: Loc, title = 'Open'): vscode.Command {
   return { command: 'meteorpower.openLocation', title, arguments: [loc] };
 }
 
@@ -102,12 +102,12 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
       case 'name': {
         const hasUses = node.uses.length > 0;
         const item = new vscode.TreeItem(node.label, hasUses ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
-        const usesText = `${node.uses.length} ${isMethod ? (node.uses.length === 1 ? 'chiamata' : 'chiamate') : 'subscribe'}`;
+        const usesText = `${node.uses.length} ${isMethod ? (node.uses.length === 1 ? 'call' : 'calls') : node.uses.length === 1 ? 'subscription' : 'subscriptions'}`;
         const d = node.defs[0];
         if (!d) {
           item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'));
           item.description = usesText;
-          item.tooltip = `'${node.name}' è usato ma non è definito nel progetto`;
+          item.tooltip = `'${node.name}' is used but not defined in the workspace`;
           return item;
         }
         item.iconPath = node.defs.length > 1 ? new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground')) : ENV_ICON[d.env];
@@ -115,7 +115,7 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
         const md = new vscode.MarkdownString(undefined, true);
         md.appendCodeblock(`${d.isAsync ? 'async ' : ''}'${node.name}'(${d.params.join(', ')})`, 'javascript');
         md.appendMarkdown(node.defs.map((x) => `${relPath(x.loc.file)}:${x.loc.range.start.line + 1}`).join('  \n'));
-        if (node.defs.length > 1) md.appendMarkdown(`\n\n$(warning) Definito ${node.defs.length} volte`);
+        if (node.defs.length > 1) md.appendMarkdown(`\n\n$(warning) Defined ${node.defs.length} times`);
         if (d.doc) md.appendMarkdown('\n\n' + d.doc);
         item.tooltip = md;
         item.command = openCommand(d.loc);
@@ -132,7 +132,7 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
         return item;
       }
       case 'unknownGroup': {
-        const item = new vscode.TreeItem(isMethod ? 'Chiamate a metodi non definiti' : 'Subscribe a publication non definite', vscode.TreeItemCollapsibleState.Collapsed);
+        const item = new vscode.TreeItem(isMethod ? 'Calls to undefined methods' : 'Subscriptions to undefined publications', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'));
         item.description = String(node.items.length);
         return item;
@@ -267,7 +267,7 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
     const a = this.a;
     switch (node.kind) {
       case 'globals': {
-        const item = new vscode.TreeItem('Helper globali', vscode.TreeItemCollapsibleState.Collapsed);
+        const item = new vscode.TreeItem('Global helpers', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon('globe');
         item.description = String(a.globalHelpers.size);
         return item;
@@ -284,7 +284,7 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
         return item;
       }
       case 'group': {
-        const item = new vscode.TreeItem(node.group === 'helpers' ? 'Helper' : 'Eventi', vscode.TreeItemCollapsibleState.Collapsed);
+        const item = new vscode.TreeItem(node.group === 'helpers' ? 'Helpers' : 'Events', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon(node.group === 'helpers' ? 'symbol-function' : 'zap');
         item.description = String(node.members.length);
         return item;
@@ -306,14 +306,14 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
         const item = new vscode.TreeItem(node.name, collapsible);
         item.id = [...node.ancestors, node.name].join('>');
         item.iconPath = html.length ? new vscode.ThemeIcon('symbol-class') : new vscode.ThemeIcon('symbol-class', new vscode.ThemeColor('problemsWarningIcon.foreground'));
-        const where = html.length ? path.basename(html[0].loc.file) : parts.length ? 'solo JS' : '';
-        item.description = recursive ? `${where} (ricorsivo)` : where;
+        const where = html.length ? path.basename(html[0].loc.file) : parts.length ? 'JS only' : '';
+        item.description = recursive ? `${where} (recursive)` : where;
         const md = new vscode.MarkdownString(undefined, true);
         md.appendMarkdown(`**${node.name}**\n\n`);
         if (html.length) md.appendMarkdown(`$(code) ${html.map((h) => relPath(h.loc.file)).join(', ')}\n\n`);
         const jsFiles = [...new Set(parts.map((p) => relPath(p.nameLoc.file)))];
         if (jsFiles.length) md.appendMarkdown(`$(symbol-method) ${jsFiles.join(', ')}\n\n`);
-        md.appendMarkdown(`Usato in ${templateUsages(a, node.name).length} punti`);
+        md.appendMarkdown(`Used in ${templateUsages(a, node.name).length} places`);
         item.tooltip = md;
         item.contextValue = `template${html.length ? '.html' : ''}${parts.length ? '.js' : ''}`;
         const target = html[0]?.loc ?? parts[0]?.nameLoc;

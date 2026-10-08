@@ -8,7 +8,7 @@ Template.userCard.onCreated(function () {
 
 Template.userCard.helpers({
   fullName() {
-    return 'Mario Rossi';
+    return 'John Smith';
   },
   items: () => [],
   selected() {

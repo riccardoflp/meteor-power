@@ -41,8 +41,8 @@ export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
   status.command = 'workbench.view.extension.meteorpower';
   const updateStatus = () => {
     const a = index.a;
-    status.text = `$(zap) ${a.methods.size} metodi · ${a.templateNames.size} template`;
-    status.tooltip = `MeteorPower: ${a.methods.size} metodi, ${a.publications.size} publication, ${a.templateNames.size} template`;
+    status.text = `$(zap) ${a.methods.size} methods · ${a.templateNames.size} templates`;
+    status.tooltip = `MeteorPower: ${a.methods.size} methods, ${a.publications.size} publications, ${a.templateNames.size} templates`;
     status.show();
   };
   ctx.subscriptions.push(status, indexer.onDidChange(updateStatus));

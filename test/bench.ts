@@ -40,6 +40,6 @@ void index.a;
 const t4 = Date.now();
 
 console.log(`${N * 2} file, ${(bytes / 1e6).toFixed(1)} MB`);
-console.log(`  parse completo:     ${t1 - t0} ms`);
-console.log(`  aggregazione:       ${t2 - t1} ms (${agg.methods.size} metodi, ${agg.templateNames.size} template)`);
-console.log(`  modifica 1 file:    ${t3 - t2} ms parse + ${t4 - t3} ms ri-aggregazione`);
+console.log(`  full parse:         ${t1 - t0} ms`);
+console.log(`  aggregation:        ${t2 - t1} ms (${agg.methods.size} methods, ${agg.templateNames.size} templates)`);
+console.log(`  edit 1 file:        ${t3 - t2} ms parse + ${t4 - t3} ms re-aggregation`);

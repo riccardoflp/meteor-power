@@ -98,7 +98,7 @@ const checks: [string, () => Promise<void>][] = [
     async () => {
       const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>('vscode.executeCodeLensProvider', uri('imports/api/users/methods.js'), 10);
       const titles = lenses.map((l) => l.command?.title ?? '');
-      assert.ok(titles.includes('1 chiamata'), titles.join(' | '));
+      assert.ok(titles.includes('1 call'), titles.join(' | '));
     },
   ],
   [
@@ -121,7 +121,7 @@ const checks: [string, () => Promise<void>][] = [
   [
     'switch HTML ⇄ JS command',
     async () => {
-      const [doc, pos] = await posOf('imports/ui/components/userCard.html', 'Salva');
+      const [doc, pos] = await posOf('imports/ui/components/userCard.html', 'Save<');
       const editor = await vscode.window.showTextDocument(doc);
       editor.selection = new vscode.Selection(pos, pos);
       await vscode.commands.executeCommand('meteorpower.switchTemplateFile');
@@ -153,10 +153,10 @@ checks.push([
   async () => {
     const methods = await renderTree(api.trees.methods);
     const templates = await renderTree(api.trees.templates);
-    console.log('\n--- Metodi ---\n' + methods + '\n--- Template ---\n' + templates + '\n');
+    console.log('\n--- Methods ---\n' + methods + '\n--- Templates ---\n' + templates + '\n');
     assert.match(methods, /^users\s+—/m);
     assert.match(methods, /^ {2}profile/m);
-    assert.match(methods, /Chiamate a metodi non definiti/);
+    assert.match(methods, /Calls to undefined methods/);
     assert.match(templates, /^mainLayout/m);
     assert.match(templates, /^ {2}userCard/m);
     assert.match(templates, /^ {4}avatar/m);

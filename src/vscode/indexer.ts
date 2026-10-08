@@ -42,7 +42,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
 
   rescan(): Promise<void> {
     this.ready = Promise.resolve(
-      vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'MeteorPower: indicizzazione…' }, () => this.fullScan()),
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'MeteorPower: indexing…' }, () => this.fullScan()),
     );
     return this.ready;
   }

@@ -94,12 +94,12 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
         const defs = (isMethod ? a.methods : a.publications).get(t.name) ?? [];
         const uses = (isMethod ? a.calls : a.subscriptions).get(t.name)?.length ?? 0;
         if (!defs.length) {
-          md.appendMarkdown(`**${isMethod ? 'Metodo' : 'Publication'}** \`${t.name}\`\n\n$(warning) Nessuna definizione trovata nel progetto.`);
+          md.appendMarkdown(`**${isMethod ? 'Method' : 'Publication'}** \`${t.name}\`\n\n$(warning) No definition found in the workspace.`);
           return md;
         }
         for (const d of defs) appendDef(md, d);
-        md.appendMarkdown(`\n\n${uses} ${isMethod ? (uses === 1 ? 'chiamata' : 'chiamate') : 'subscribe'} nel progetto`);
-        if (defs.length > 1) md.appendMarkdown(`\n\n$(warning) Definito ${defs.length} volte.`);
+        md.appendMarkdown(`\n\n${uses} ${isMethod ? (uses === 1 ? 'call' : 'calls') : uses === 1 ? 'subscription' : 'subscriptions'} in the workspace`);
+        if (defs.length > 1) md.appendMarkdown(`\n\n$(warning) Defined ${defs.length} times.`);
         return md;
       }
       case 'template': {
@@ -107,15 +107,15 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
         const parts = a.parts.get(t.name) ?? [];
         md.appendMarkdown(`**Template** \`${t.name}\`\n\n`);
         if (html.length) md.appendMarkdown(`$(code) HTML: ${html.map((h) => fileLink(h.loc)).join(', ')}\n\n`);
-        else md.appendMarkdown(`$(warning) Nessun \`<template name="${t.name}">\` trovato\n\n`);
+        else md.appendMarkdown(`$(warning) No \`<template name="${t.name}">\` found\n\n`);
         const jsFiles = [...new Map(parts.map((p) => [p.nameLoc.file, p.nameLoc])).values()];
         if (jsFiles.length) md.appendMarkdown(`$(symbol-method) JS: ${jsFiles.map(fileLink).join(', ')}\n\n`);
         const helpers = [...(a.helpers.get(t.name)?.keys() ?? [])];
-        if (helpers.length) md.appendMarkdown(`**Helper:** ${helpers.map((h) => `\`${h}\``).join(' ')}\n\n`);
+        if (helpers.length) md.appendMarkdown(`**Helpers:** ${helpers.map((h) => `\`${h}\``).join(' ')}\n\n`);
         const events = a.events.get(t.name) ?? [];
-        if (events.length) md.appendMarkdown(`**Eventi:** ${events.map((e) => `\`${e.name}\``).join(' ')}\n\n`);
+        if (events.length) md.appendMarkdown(`**Events:** ${events.map((e) => `\`${e.name}\``).join(' ')}\n\n`);
         const usedIn = templateUsages(a, t.name).length;
-        md.appendMarkdown(`Usato in ${usedIn} ${usedIn === 1 ? 'punto' : 'punti'}`);
+        md.appendMarkdown(`Used in ${usedIn} ${usedIn === 1 ? 'place' : 'places'}`);
         return md;
       }
       case 'helper': {
@@ -123,23 +123,23 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
         if (!defs.length) {
           if (t.isDef) return undefined;
           md.appendMarkdown(
-            `\`${t.name}\`: nessun helper con questo nome in \`${t.template}\` né tra gli helper globali.\n\nProbabilmente è un campo del data context.`,
+            `\`${t.name}\`: no helper with this name in \`${t.template}\` or among the global helpers.\n\nProbably a data context field.`,
           );
           return md;
         }
         const isGlobal = t.template === null || !a.helpers.get(t.template)?.get(t.name)?.length;
-        md.appendMarkdown(`**${isGlobal ? 'Helper globale' : `Helper di \`${t.template}\``}** \`${t.name}\`\n\n`);
+        md.appendMarkdown(`**${isGlobal ? 'Global helper' : `Helper of \`${t.template}\``}** \`${t.name}\`\n\n`);
         for (const d of defs) appendMember(md, d);
         if (t.isDef) {
           const n = helperUsages(a, isGlobal ? null : t.template, t.name).length;
-          md.appendMarkdown(`\n\nUsato ${n} ${n === 1 ? 'volta' : 'volte'} nell'HTML`);
+          md.appendMarkdown(`\n\nUsed ${n} ${n === 1 ? 'time' : 'times'} in HTML`);
         }
         return md;
       }
       case 'event': {
         const n = eventTargets(a, t.template, t.name).length;
-        md.appendMarkdown(`**Evento** \`${t.name}\` di \`${t.template}\`\n\n`);
-        md.appendMarkdown(n ? `${n} ${n === 1 ? 'elemento corrispondente' : 'elementi corrispondenti'} nell'HTML (Ctrl+Click per andarci)` : `Nessun elemento con questa classe/id trovato nell'HTML del template.`);
+        md.appendMarkdown(`**Event** \`${t.name}\` of \`${t.template}\`\n\n`);
+        md.appendMarkdown(n ? `${n} matching ${n === 1 ? 'element' : 'elements'} in the HTML (Ctrl+Click to go there)` : `No element with this class/id found in the template HTML.`);
         return md;
       }
     }
@@ -235,8 +235,8 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
     const helperItems = () => {
       const tpl = enclosingTemplate(index, doc.uri.fsPath, toPos(pos));
       const own = tpl ? a.helpers.get(tpl) : undefined;
-      for (const [name, defs] of own ?? []) items.push(helperItem(name, defs[0], `helper di ${tpl}`, '0'));
-      for (const [name, defs] of a.globalHelpers) if (!own?.has(name)) items.push(helperItem(name, defs[0], 'helper globale', '1'));
+      for (const [name, defs] of own ?? []) items.push(helperItem(name, defs[0], `helper of ${tpl}`, '0'));
+      for (const [name, defs] of a.globalHelpers) if (!own?.has(name)) items.push(helperItem(name, defs[0], 'global helper', '1'));
     };
 
     const helperItem = (name: string, m: Member, description: string, sortPrefix: string) => {
@@ -328,11 +328,11 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
 
     for (const d of f.methods) {
       const name = a.resolve(d);
-      if (name !== undefined) refsLens(d.loc, (a.calls.get(name) ?? []).map((c) => c.loc), 'chiamata', 'chiamate');
+      if (name !== undefined) refsLens(d.loc, (a.calls.get(name) ?? []).map((c) => c.loc), 'call', 'calls');
     }
     for (const d of f.publications) {
       const name = a.resolve(d);
-      if (name !== undefined) refsLens(d.loc, (a.subscriptions.get(name) ?? []).map((c) => c.loc), 'subscribe', 'subscribe');
+      if (name !== undefined) refsLens(d.loc, (a.subscriptions.get(name) ?? []).map((c) => c.loc), 'subscription', 'subscriptions');
     }
 
     // JS: one "→ HTML" lens per template per file
@@ -343,7 +343,7 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
       const html = a.templates.get(p.template)?.[0];
       const range = toRange(p.nameLoc);
       if (html) lenses.push(new vscode.CodeLens(range, { title: '$(code) HTML', command: 'meteorpower.openLocation', arguments: [html.loc] }));
-      refsLens(p.nameLoc, templateUsages(a, p.template), 'uso', 'usi');
+      refsLens(p.nameLoc, templateUsages(a, p.template), 'use', 'uses');
     }
 
     // HTML: on each <template name="x">
@@ -355,15 +355,15 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
       if (parts.length) {
         lenses.push(
           new vscode.CodeLens(range, {
-            title: `$(symbol-method) JS · ${helpers} helper · ${events} ${events === 1 ? 'evento' : 'eventi'}`,
+            title: `$(symbol-method) JS · ${helpers} ${helpers === 1 ? 'helper' : 'helpers'} · ${events} ${events === 1 ? 'event' : 'events'}`,
             command: 'meteorpower.openJs',
             arguments: [t.name],
           }),
         );
       } else {
-        lenses.push(new vscode.CodeLens(range, { title: 'nessun JS', command: '' }));
+        lenses.push(new vscode.CodeLens(range, { title: 'no JS', command: '' }));
       }
-      refsLens(t.loc, templateUsages(a, t.name), 'uso', 'usi');
+      refsLens(t.loc, templateUsages(a, t.name), 'use', 'uses');
     }
     return lenses;
   }

@@ -107,7 +107,7 @@ test('diagnostics flag unknown methods, publications and templates only', () => 
   const js = problems(index, F('client/legacy/logic/userCard.js'), { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] });
   assert.deepEqual(js.map((p) => p.code).sort(), ['unknown-method', 'unknown-publication']);
   const html = problems(index, F('imports/ui/components/userCard.html'), { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] });
-  assert.deepEqual(html.map((p) => p.message), ["Template 'missingTemplate' non trovato nel progetto."]);
+  assert.deepEqual(html.map((p) => p.message), ["Template 'missingTemplate' is not defined in the workspace."]);
   const ignored = problems(index, F('client/legacy/logic/userCard.js'), { ignoreMethods: ['users.*'], ignorePublications: ['users.unknownPub'], ignoreTemplates: [] });
   assert.equal(ignored.length, 0);
 });
@@ -181,8 +181,8 @@ test('event map selectors → matching elements in the template HTML', () => {
 });
 
 test('enclosing template and env detection', () => {
-  assert.equal(enclosingTemplate(index, F('imports/ui/components/userCard.html'), posOf('imports/ui/components/userCard.html', 'Salva')), 'userCard');
-  assert.equal(enclosingTemplate(index, F('client/legacy/logic/userCard.js'), posOf('client/legacy/logic/userCard.js', "return 'Mario")), 'userCard');
+  assert.equal(enclosingTemplate(index, F('imports/ui/components/userCard.html'), posOf('imports/ui/components/userCard.html', 'Save<')), 'userCard');
+  assert.equal(enclosingTemplate(index, F('client/legacy/logic/userCard.js'), posOf('client/legacy/logic/userCard.js', "return 'John")), 'userCard');
   assert.equal(index.a.calls.get('users.update')![0].env, 'client');
 });
 

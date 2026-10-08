@@ -15,7 +15,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
 
   const pickAndOpen = async (items: LocPick[], placeHolder: string) => {
     if (!items.length) {
-      vscode.window.showInformationMessage('MeteorPower: niente da mostrare.');
+      vscode.window.showInformationMessage('MeteorPower: nothing to show.');
       return;
     }
     if (items.length === 1) return openLoc(items[0].loc);
@@ -32,7 +32,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
   const openTemplateHtml = (name: string) =>
     pickAndOpen(
       templateHtmlDefs(index.a, name).map((d) => ({ label: name, description: relPath(d.loc.file), loc: d.loc })),
-      `HTML di ${name}`,
+      `HTML of ${name}`,
     );
 
   const openTemplateJs = (name: string) => {
@@ -44,7 +44,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
     }
     return pickAndOpen(
       [...byFile.values()].map((loc) => ({ label: path.basename(loc.file), description: relPath(loc.file), loc })),
-      `JS di ${name}`,
+      `JS of ${name}`,
     );
   };
 
@@ -80,14 +80,14 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
           const uses = index.a.calls.get(name)?.length ?? 0;
           items.push({
             label: `$(symbol-method) ${name}`,
-            description: `(${d.params.join(', ')}) · ${d.env} · ${uses} chiamate`,
+            description: `(${d.params.join(', ')}) · ${d.env} · ${uses} ${uses === 1 ? 'call' : 'calls'}`,
             detail: relPath(d.loc.file),
             loc: d.loc,
           });
         }
       }
       items.sort((x, y) => x.label.localeCompare(y.label));
-      return pickAndOpen(items, 'Cerca un metodo Meteor');
+      return pickAndOpen(items, 'Search a Meteor method');
     }),
 
     vscode.commands.registerCommand('meteorpower.goToPublication', async () => {
@@ -96,11 +96,11 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       for (const [name, defs] of index.a.publications) {
         for (const d of defs) {
           const uses = index.a.subscriptions.get(name)?.length ?? 0;
-          items.push({ label: `$(radio-tower) ${name}`, description: `(${d.params.join(', ')}) · ${uses} subscribe`, detail: relPath(d.loc.file), loc: d.loc });
+          items.push({ label: `$(radio-tower) ${name}`, description: `(${d.params.join(', ')}) · ${uses} ${uses === 1 ? 'subscription' : 'subscriptions'}`, detail: relPath(d.loc.file), loc: d.loc });
         }
       }
       items.sort((x, y) => x.label.localeCompare(y.label));
-      return pickAndOpen(items, 'Cerca una publication');
+      return pickAndOpen(items, 'Search a publication');
     }),
 
     vscode.commands.registerCommand('meteorpower.goToTemplate', async () => {
@@ -116,12 +116,12 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
         const events = a.events.get(name)?.length ?? 0;
         items.push({
           label: `$(symbol-class) ${name}`,
-          description: `${helpers} helper · ${events} eventi`,
-          detail: html ? relPath(html.loc.file) : `solo JS: ${relPath(part!.nameLoc.file)}`,
+          description: `${helpers} ${helpers === 1 ? 'helper' : 'helpers'} · ${events} ${events === 1 ? 'event' : 'events'}`,
+          detail: html ? relPath(html.loc.file) : `JS only: ${relPath(part!.nameLoc.file)}`,
           loc,
         });
       }
-      return pickAndOpen(items, 'Cerca un template Blaze');
+      return pickAndOpen(items, 'Search a Blaze template');
     }),
 
     vscode.commands.registerCommand('meteorpower.switchTemplateFile', async () => {
@@ -134,16 +134,16 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       if (!name) {
         const names = templatesInFile(index, file);
         if (names.length === 1) name = names[0];
-        else if (names.length > 1) name = await vscode.window.showQuickPick(names, { placeHolder: 'Quale template?' });
+        else if (names.length > 1) name = await vscode.window.showQuickPick(names, { placeHolder: 'Which template?' });
       }
       if (!name) {
-        vscode.window.showInformationMessage('MeteorPower: nessun template Blaze in questo file.');
+        vscode.window.showInformationMessage('MeteorPower: no Blaze template in this file.');
         return;
       }
       const isHtml = file.toLowerCase().endsWith('.html');
       const targets = isHtml ? templateJsDefs(index.a, name) : templateHtmlDefs(index.a, name);
       if (!targets.length) {
-        vscode.window.showInformationMessage(`MeteorPower: nessun file ${isHtml ? 'JS' : 'HTML'} trovato per il template '${name}'.`);
+        vscode.window.showInformationMessage(`MeteorPower: no ${isHtml ? 'JS' : 'HTML'} file found for template '${name}'.`);
         return;
       }
       return isHtml ? openTemplateJs(name) : openTemplateHtml(name);
