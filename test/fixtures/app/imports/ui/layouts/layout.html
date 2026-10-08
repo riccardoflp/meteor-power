@@ -1,0 +1,13 @@
+<template name="mainLayout">
+  <header>{{> navbar}}</header>
+  <main>{{> Template.dynamic template=main}}</main>
+  {{> Template.dynamic template="userCard"}}
+</template>
+
+<template name="navbar">
+  <nav>{{title}}</nav>
+</template>
+
+<template name="modal">
+  <div class="modal">{{title}} {{> Template.contentBlock}}</div>
+</template>

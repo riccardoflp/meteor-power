@@ -1,0 +1,23 @@
+<template name="userCard">
+  <div class="card user-card {{#if selected}}selected{{/if}}" id="card-main">
+    <h2>{{fullName}}</h2>
+    {{> avatar user=this size=42}}
+    {{!-- {{commentedHelper}} --}}
+    <ul>
+      {{#each item in items}}
+        <li>{{item.name}} - {{formatDate item.createdAt}}</li>
+      {{else}}
+        <li>{{emptyText}}</li>
+      {{/each}}
+    </ul>
+    {{#modal title=modalTitle}}
+      body
+    {{/modal}}
+    {{> missingTemplate}}
+    <button class="btn js-save" type="button">Salva</button>
+  </div>
+</template>
+
+<template name="avatar">
+  <img src="{{user.avatarUrl}}" width="{{size}}">
+</template>

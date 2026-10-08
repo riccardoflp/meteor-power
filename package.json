@@ -1,0 +1,301 @@
+{
+  "name": "meteorpower",
+  "displayName": "MeteorPower",
+  "description": "Navigazione per Meteor e Blaze: vai alla definizione di metodi, publication, template e helper, autocompletamento e pannello laterale.",
+  "version": "0.1.0",
+  "publisher": "meteorpower",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "meteor",
+    "blaze",
+    "spacebars",
+    "navigation"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:.meteor/release",
+    "workspaceContains:**/.meteor/release"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "meteorpower",
+          "title": "MeteorPower",
+          "icon": "resources/meteor.svg"
+        }
+      ]
+    },
+    "views": {
+      "meteorpower": [
+        {
+          "id": "meteorpower.methods",
+          "name": "Metodi"
+        },
+        {
+          "id": "meteorpower.publications",
+          "name": "Publication"
+        },
+        {
+          "id": "meteorpower.templates",
+          "name": "Template"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "meteorpower.methods",
+        "contents": "Nessun metodo Meteor trovato (ancora).\n[Reindicizza progetto](command:meteorpower.refresh)"
+      },
+      {
+        "view": "meteorpower.publications",
+        "contents": "Nessuna publication trovata."
+      },
+      {
+        "view": "meteorpower.templates",
+        "contents": "Nessun template Blaze trovato."
+      }
+    ],
+    "commands": [
+      {
+        "command": "meteorpower.refresh",
+        "title": "Reindicizza progetto",
+        "category": "MeteorPower",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "meteorpower.goToMethod",
+        "title": "Vai al metodo…",
+        "category": "MeteorPower",
+        "icon": "$(search)"
+      },
+      {
+        "command": "meteorpower.goToPublication",
+        "title": "Vai alla publication…",
+        "category": "MeteorPower",
+        "icon": "$(search)"
+      },
+      {
+        "command": "meteorpower.goToTemplate",
+        "title": "Vai al template…",
+        "category": "MeteorPower",
+        "icon": "$(search)"
+      },
+      {
+        "command": "meteorpower.switchTemplateFile",
+        "title": "Passa tra HTML e JS del template",
+        "category": "MeteorPower"
+      },
+      {
+        "command": "meteorpower.templates.showHierarchy",
+        "title": "Vista gerarchica (inclusioni)",
+        "category": "MeteorPower",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "meteorpower.templates.showFlat",
+        "title": "Vista piatta",
+        "category": "MeteorPower",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "meteorpower.openHtml",
+        "title": "Apri HTML",
+        "icon": "$(code)"
+      },
+      {
+        "command": "meteorpower.openJs",
+        "title": "Apri JS",
+        "icon": "$(symbol-method)"
+      },
+      {
+        "command": "meteorpower.openLocation",
+        "title": "Apri"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "meteorpower.goToMethod",
+          "when": "view == meteorpower.methods",
+          "group": "navigation@1"
+        },
+        {
+          "command": "meteorpower.goToPublication",
+          "when": "view == meteorpower.publications",
+          "group": "navigation@1"
+        },
+        {
+          "command": "meteorpower.goToTemplate",
+          "when": "view == meteorpower.templates",
+          "group": "navigation@1"
+        },
+        {
+          "command": "meteorpower.templates.showFlat",
+          "when": "view == meteorpower.templates && meteorpower.templatesMode == hierarchy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "meteorpower.templates.showHierarchy",
+          "when": "view == meteorpower.templates && meteorpower.templatesMode != hierarchy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "meteorpower.refresh",
+          "when": "view =~ /^meteorpower\\./",
+          "group": "navigation@9"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "meteorpower.openHtml",
+          "when": "view == meteorpower.templates && viewItem =~ /^template.*\\.html/",
+          "group": "inline@1"
+        },
+        {
+          "command": "meteorpower.openJs",
+          "when": "view == meteorpower.templates && viewItem =~ /^template.*\\.js/",
+          "group": "inline@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "meteorpower.switchTemplateFile",
+          "when": "resourceExtname =~ /^\\.(html|js|jsx|ts|tsx|mjs)$/",
+          "group": "navigation@90"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "meteorpower.openHtml",
+          "when": "false"
+        },
+        {
+          "command": "meteorpower.openJs",
+          "when": "false"
+        },
+        {
+          "command": "meteorpower.openLocation",
+          "when": "false"
+        },
+        {
+          "command": "meteorpower.templates.showFlat",
+          "when": "false"
+        },
+        {
+          "command": "meteorpower.templates.showHierarchy",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "meteorpower.switchTemplateFile",
+        "key": "alt+o",
+        "when": "editorTextFocus && resourceExtname =~ /^\\.(html|js|jsx|ts|tsx|mjs)$/"
+      }
+    ],
+    "configuration": {
+      "title": "MeteorPower",
+      "properties": {
+        "meteorpower.include": {
+          "type": "string",
+          "default": "**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}",
+          "description": "Glob dei file da indicizzare."
+        },
+        "meteorpower.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.meteor/local/**",
+            "**/.git/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/bundle/**",
+            "**/coverage/**",
+            "**/*.min.js"
+          ],
+          "description": "Glob dei file da escludere dall'indicizzazione."
+        },
+        "meteorpower.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mostra i CodeLens (numero di chiamate, collegamenti HTML/JS) sopra metodi, publication e template."
+        },
+        "meteorpower.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Segnala chiamate a metodi/publication inesistenti e inclusioni di template inesistenti."
+        },
+        "meteorpower.diagnostics.severity": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "information",
+            "hint"
+          ],
+          "default": "warning",
+          "description": "Gravità delle segnalazioni."
+        },
+        "meteorpower.diagnostics.ignoreMethods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Metodi da non segnalare anche se non definiti nel progetto (es. definiti da pacchetti). Supporta * come jolly, es. \"accounts.*\"."
+        },
+        "meteorpower.diagnostics.ignorePublications": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Publication da non segnalare. Supporta * come jolly."
+        },
+        "meteorpower.diagnostics.ignoreTemplates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "loginButtons",
+            "atForm"
+          ],
+          "description": "Template da non segnalare (es. forniti da pacchetti Atmosphere). Supporta * come jolly."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node esbuild.mjs --tests && node --test out/test/unit.test.js",
+    "test:integration": "node esbuild.mjs --tests && node out/test/integration/run.js",
+    "package": "node esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository --skip-license"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.26.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "~1.85.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}
