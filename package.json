@@ -234,10 +234,43 @@
             "**/dist/**",
             "**/build/**",
             "**/bundle/**",
+            "**/public/**",
             "**/coverage/**",
             "**/*.min.js"
           ],
-          "description": "Globs of the files to exclude from indexing."
+          "description": "Globs of the files to exclude from indexing. `public/` is excluded because Meteor serves it as static files (its HTML is not Blaze)."
+        },
+        "meteorPower.methods.defineFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Your own functions that **define** Meteor methods (wrappers around `Meteor.methods`). Supported shapes: `fn('name', handler)`, `fn('name', { run })`, `fn({ name: 'x', run() {} })`, `fn({ 'a.b'() {}, 'a.c'() {} })`, also with `new`. Use the bare name to match `fn(...)` and `obj.fn(...)`, or the full path (`Api.fn`) to match only that.\n\nExample: `[\"createMethod\", \"defineMethods\"]`"
+        },
+        "meteorPower.methods.callFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Your own functions that **call** Meteor methods with the name as first argument (wrappers around `Meteor.callAsync`): `fn('name', ...args)` or `fn({ name: 'x', ... })`.\n\nExample: `[\"callMethod\", \"Api.call\"]`"
+        },
+        "meteorPower.publications.defineFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Your own functions that **define** publications (wrappers around `Meteor.publish`). Same shapes as `#meteorPower.methods.defineFunctions#`.\n\nExample: `[\"createPublication\"]`"
+        },
+        "meteorPower.publications.subscribeFunctions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Your own functions that **subscribe** to publications with the name as first argument (wrappers around `Meteor.subscribe`).\n\nExample: `[\"useSubscribe\", \"subscribeTo\"]`"
         },
         "meteorPower.codeLens.enabled": {
           "type": "boolean",

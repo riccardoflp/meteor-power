@@ -189,6 +189,22 @@ checks.push([
   },
 ]);
 
+checks.push([
+  'settings: custom wrappers, import aliases, public/ excluded',
+  async () => {
+    // .vscode/settings.json of the fixture declares callMethod / createMethod / useSubscribe / ...
+    const [doc, pos] = await posOf('client/orders.js', "callMethod('orders.create'", 13);
+    const d = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', doc.uri, pos);
+    assert.deepEqual(d.map((x) => rel(targetUri(x))), ['imports/api/orders/methods.js']);
+    const [, apos] = await posOf('client/orders.js', 'OrderNames.CANCEL', 12);
+    const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', doc.uri, apos);
+    const text = hovers.flatMap((h) => h.contents.map((c) => (typeof c === 'string' ? c : c.value))).join('\n');
+    assert.match(text, /async 'orders\.cancel'\(\{ orderId \}\)/);
+    assert.equal(vscode.languages.getDiagnostics(doc.uri).length, 0);
+    assert.ok(!api.index.a.templateNames.has('notBlaze'), 'public/ must not be indexed');
+  },
+]);
+
 export async function run(): Promise<void> {
   const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'meteor-power')!;
   api = await ext.activate();

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { MeteorIndex } from '../core/index';
 import { parseHtml } from '../core/htmlParser';
-import { parseJs } from '../core/jsParser';
+import { JsParseOptions, parseJs } from '../core/jsParser';
 import { FileFacts } from '../core/model';
 import { globToRegExp } from '../core/text';
 
@@ -19,6 +19,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
   private excludes: RegExp[] = [];
   private watcher: vscode.FileSystemWatcher | undefined;
   private scanId = 0;
+  private options: JsParseOptions = {};
   /** path as seen by VS Code → real path on disk (symlinks resolved) */
   private readonly realPaths = new Map<string, string>();
 
@@ -37,7 +38,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
         this.versions.delete(d.uri.fsPath);
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('meteorPower.include') || e.affectsConfiguration('meteorPower.exclude')) void this.rescan();
+        const keys = ['meteorPower.include', 'meteorPower.exclude', 'meteorPower.methods', 'meteorPower.publications'];
+        if (keys.some((k) => e.affectsConfiguration(k))) void this.rescan();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => void this.rescan()),
     );
@@ -56,6 +58,12 @@ export class WorkspaceIndexer implements vscode.Disposable {
     const include = cfg.get<string>('include') || '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}';
     const exclude = cfg.get<string[]>('exclude') ?? [];
     this.excludes = exclude.map(globToRegExp);
+    this.options = {
+      methodDefiners: cfg.get<string[]>('methods.defineFunctions', []),
+      methodCallers: cfg.get<string[]>('methods.callFunctions', []),
+      publicationDefiners: cfg.get<string[]>('publications.defineFunctions', []),
+      subscribeCallers: cfg.get<string[]>('publications.subscribeFunctions', []),
+    };
 
     this.watcher?.dispose();
     this.watcher = vscode.workspace.createFileSystemWatcher(include);
@@ -122,7 +130,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
       clearTimeout(t);
       this.pending.delete(file);
     }
-    const facts = parse(this.keyOf(file), doc.getText());
+    const facts = parse(this.keyOf(file), doc.getText(), this.options);
     this.versions.set(file, doc.version);
     if (facts) {
       this.index.update(facts);
@@ -159,7 +167,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
       const stat = await vscode.workspace.fs.stat(uri);
       if (stat.size > MAX_SIZE) return;
       const bytes = await vscode.workspace.fs.readFile(uri);
-      const facts = parse(this.keyOf(uri.fsPath), Buffer.from(bytes).toString('utf8'));
+      const facts = parse(this.keyOf(uri.fsPath), Buffer.from(bytes).toString('utf8'), this.options);
       if (facts) this.index.update(facts);
       if (notify) this.fireChange();
     } catch {
@@ -187,6 +195,6 @@ export class WorkspaceIndexer implements vscode.Disposable {
   }
 }
 
-function parse(file: string, text: string): FileFacts | null {
-  return file.toLowerCase().endsWith('.html') ? parseHtml(file, text) : parseJs(file, text);
+function parse(file: string, text: string, options: JsParseOptions): FileFacts | null {
+  return file.toLowerCase().endsWith('.html') ? parseHtml(file, text) : parseJs(file, text, options);
 }

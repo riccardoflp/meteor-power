@@ -17,7 +17,25 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 | Diagnostics | warning on calls to undefined methods or publications |
 
 Names can also be **constants**, resolved across the whole workspace:
-`Meteor.callAsync(USERS_METHODS.RESET)`, `[USERS_METHODS.RESET]() {}`, `import * as C ...; C.USERS_METHODS.RESET`, TypeScript enums and `Object.freeze({...})`.
+`Meteor.callAsync(USERS_METHODS.RESET)`, `[USERS_METHODS.RESET]() {}`, TypeScript enums and `Object.freeze({...})`, also through
+`import { USERS_METHODS as UM }`, `import * as C`, `import NAMES from './names'` (default export), `const { RESET } = USERS_METHODS`.
+
+### Your own wrappers
+
+If your project defines or calls methods through its own functions instead of `Meteor.methods` / `Meteor.callAsync`, list them in the settings and they are handled like the Meteor APIs:
+
+```jsonc
+// .vscode/settings.json
+{
+  "meteorPower.methods.defineFunctions": ["createMethod", "defineMethods"],
+  "meteorPower.methods.callFunctions": ["callMethod"],
+  "meteorPower.publications.defineFunctions": ["createPublication"],
+  "meteorPower.publications.subscribeFunctions": ["useSubscribe"]
+}
+```
+
+Supported shapes: `fn('name', handler)`, `fn('name', { run })`, `fn({ name: 'x', run() {} })`, `fn({ 'a.b'() {}, 'a.c'() {} })` and the same with `new`. Callers take the name as first argument, or `{ name: 'x' }`.
+A bare name (`callMethod`) matches both `callMethod(...)` and `Api.callMethod(...)`; a full path (`Api.callMethod`) matches only that.
 
 ## Blaze
 
@@ -51,7 +69,8 @@ Quick commands (Ctrl+Shift+P): *Meteor Power: Go to Method… / Go to Publicatio
 
 ## Settings
 
-- `meteorPower.include` / `meteorPower.exclude`: which files to index.
+- `meteorPower.include` / `meteorPower.exclude`: which files to index. `public/` is excluded by default, because Meteor serves it as static files.
+- `meteorPower.methods.defineFunctions` / `callFunctions`, `meteorPower.publications.defineFunctions` / `subscribeFunctions`: your own wrappers, see above.
 - `meteorPower.diagnostics.enabled`, `meteorPower.diagnostics.severity`: turn the reported problems on or off and choose their severity.
 - `meteorPower.diagnostics.ignoreMethods` / `ignorePublications` / `ignoreTemplates`: names provided by packages that should not be reported. They support `*`, e.g. `"accounts.*"`.
 - `meteorPower.codeLens.enabled`: show or hide the CodeLens.

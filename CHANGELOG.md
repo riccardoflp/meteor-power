@@ -22,3 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Side panel with methods grouped by namespace, publications, and templates in hierarchical (inclusion tree) or flat view
 - Workspace symbols (Ctrl+T) for methods, publications, templates and global helpers
 - Files reachable through symlinked folders (e.g. shared imports linked into several apps) are indexed once, under their real path
+- Settings for your own wrapper functions that define or call methods and publications (`meteorPower.methods.defineFunctions`, `callFunctions`, `meteorPower.publications.defineFunctions`, `subscribeFunctions`)
+- Constant names are also resolved through `import { X as Y }`, default imports (`import NAMES from './names'`) and destructuring (`const { RESET } = USERS_METHODS`)
+- `public/` is excluded from indexing by default (static files, not Blaze)

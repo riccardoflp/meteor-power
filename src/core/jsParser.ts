@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { parse, ParserPlugin } from '@babel/parser';
 import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, TemplatePartKind } from './model';
 import { envFromPath, LineMap, makeSnippet, stripBom } from './text';
@@ -7,7 +8,7 @@ type Node = any;
 
 const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout/;
 /** Files that may only export name constants (e.g. `export const METHODS = { UPDATE: 'users.update' }`). */
-const CONSTANTS_CHECK = /\bexport\s+(?:const|let|var|enum)\b/;
+const CONSTANTS_CHECK = /\bexport\s+(?:const|let|var|enum|default)\b/;
 const CALL_FNS = new Set(['call', 'callAsync', 'apply', 'applyAsync']);
 const TEMPLATE_PART_KINDS = new Set<string>(['helpers', 'events', 'onCreated', 'onRendered', 'onDestroyed']);
 /** Properties of the global `Template` that are not template names. */
@@ -30,6 +31,20 @@ const TEMPLATE_STATICS = new Set([
 ]);
 const SKIP_KEYS = new Set(['loc', 'start', 'end', 'extra', 'leadingComments', 'trailingComments', 'innerComments', 'range']);
 
+/** Project-specific helper functions (configured in the settings) that wrap the Meteor APIs. */
+export interface JsParseOptions {
+  /** e.g. `createMethod('name', fn)`, `createMethod({ name, run })`, `defineMethods({ 'a.b'() {} })` */
+  methodDefiners?: string[];
+  /** e.g. `callMethod('name', ...args)` */
+  methodCallers?: string[];
+  publicationDefiners?: string[];
+  subscribeCallers?: string[];
+}
+
+/** Property names holding the function in `definer({ name, run })` forms. */
+const FN_PROPS = ['run', 'handler', 'method', 'fn', 'publish', 'handle'];
+const JS_EXT = /\.(js|jsx|mjs|cjs|ts|tsx|mts|cts)$/i;
+
 interface NameResult {
   name?: string;
   nameExpr?: string;
@@ -41,10 +56,18 @@ interface NameResult {
  * Extracts Meteor/Blaze facts from a JS/TS file.
  * Returns `null` when the file cannot be parsed at all (so callers can keep the previous facts while typing).
  */
-export function parseJs(file: string, source: string): FileFacts | null {
+export function parseJs(file: string, source: string, options: JsParseOptions = {}): FileFacts | null {
   const facts = emptyFacts(file);
   const text = stripBom(source);
-  if (!QUICK_CHECK.test(text) && !CONSTANTS_CHECK.test(text)) return facts;
+  const custom = {
+    methodDefiners: options.methodDefiners ?? [],
+    methodCallers: options.methodCallers ?? [],
+    publicationDefiners: options.publicationDefiners ?? [],
+    subscribeCallers: options.subscribeCallers ?? [],
+  };
+  const customNames = [...custom.methodDefiners, ...custom.methodCallers, ...custom.publicationDefiners, ...custom.subscribeCallers];
+  const mentionsCustom = customNames.some((n) => text.includes(n.split('.').pop()!));
+  if (!QUICK_CHECK.test(text) && !CONSTANTS_CHECK.test(text) && !mentionsCustom) return facts;
 
   const ast = tryParse(file, text);
   if (!ast) return null;
@@ -53,8 +76,15 @@ export function parseJs(file: string, source: string): FileFacts | null {
   const loc = (start: number, end: number): Loc => ({ file, range: lm.range(start, end) });
   const fileEnv = envFromPath(file);
   const objects = new Map<string, Node>();
+  /**
+   * Local name → what it stands for, used to rewrite constant references before resolving them:
+   * `import { A as B }` (B → A), `import * as C` (C → ''), `import D from './x'` (D → @default(path)),
+   * `const { X, Y: Z } = A` (X → A.X, Z → A.Y), `const M = A.B` (M → A.B).
+   */
+  const aliases = new Map<string, string>();
 
   collectTopLevel(ast.program);
+  collectAliases(ast.program);
   walk(ast.program, undefined);
   return facts;
 
@@ -75,6 +105,8 @@ export function parseJs(file: string, source: string): FileFacts | null {
             flattenObject(d.id.name, init, 0);
           }
         }
+      } else if (stmt.type === 'ExportDefaultDeclaration') {
+        collectDefaultExport(unwrap(stmt.declaration));
       } else if (decl.type === 'TSEnumDeclaration') {
         for (const m of decl.members ?? decl.body?.members ?? []) {
           const key = m.id?.type === 'Identifier' ? m.id.name : m.id?.value;
@@ -85,7 +117,80 @@ export function parseJs(file: string, source: string): FileFacts | null {
     }
   }
 
-  function flattenObject(prefix: string, obj: Node, depth: number) {
+  function collectDefaultExport(node: Node) {
+    if (!node) return;
+    const s = staticString(node);
+    if (s !== undefined) {
+      facts.defaultExport[''] = s;
+      return;
+    }
+    if (node.type === 'ObjectExpression') {
+      const tmp: Record<string, string> = {};
+      flattenObject('', node, 0, tmp);
+      for (const [k, v] of Object.entries(tmp)) facts.defaultExport[k.slice(1)] = v;
+      return;
+    }
+    // `const X = {...}; export default X;`
+    if (node.type === 'Identifier') {
+      const prefix = node.name;
+      if (facts.constants[prefix] !== undefined) facts.defaultExport[''] = facts.constants[prefix];
+      for (const [k, v] of Object.entries(facts.constants)) if (k.startsWith(prefix + '.')) facts.defaultExport[k.slice(prefix.length + 1)] = v;
+    }
+  }
+
+  function collectAliases(program: Node) {
+    for (const stmt of program.body) {
+      if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type') continue;
+      const spec: string = stmt.source.value;
+      for (const sp of stmt.specifiers ?? []) {
+        const local = sp.local?.name;
+        if (!local) continue;
+        if (sp.type === 'ImportNamespaceSpecifier') aliases.set(local, '');
+        else if (sp.type === 'ImportDefaultSpecifier') {
+          const hint = moduleHint(file, spec);
+          if (hint) aliases.set(local, `@default(${hint})`);
+        } else if (sp.type === 'ImportSpecifier') {
+          const imported = sp.imported?.type === 'Identifier' ? sp.imported.name : sp.imported?.value;
+          if (imported === 'default') {
+            const hint = moduleHint(file, spec);
+            if (hint) aliases.set(local, `@default(${hint})`);
+          } else if (imported && imported !== local) aliases.set(local, imported);
+        }
+      }
+    }
+    // destructuring and plain re-assignments, anywhere in the file
+    forEachNode(program, (n) => {
+      if (n.type !== 'VariableDeclarator' || !n.init) return;
+      const from = exprPath(unwrap(n.init));
+      if (!from) return;
+      if (n.id.type === 'Identifier') {
+        if (n.id.name !== from) aliases.set(n.id.name, from);
+      } else if (n.id.type === 'ObjectPattern') {
+        for (const p of n.id.properties) {
+          if (p.type !== 'ObjectProperty' || p.computed) continue;
+          const key = literalKey(p.key);
+          const value = p.value?.type === 'AssignmentPattern' ? p.value.left : p.value;
+          if (key !== undefined && value?.type === 'Identifier') aliases.set(value.name, `${from}.${key}`);
+        }
+      }
+    });
+  }
+
+  /** Rewrites the leading alias of a path: `UM.RESET` → `USERS_METHODS.RESET`. */
+  function expandAliases(p: string): string | undefined {
+    for (let i = 0; i < 5; i++) {
+      const dot = p.indexOf('.');
+      const head = dot < 0 ? p : p.slice(0, dot);
+      const rest = dot < 0 ? '' : p.slice(dot + 1);
+      const target = aliases.get(head);
+      if (target === undefined) break;
+      p = target && rest ? `${target}.${rest}` : target || rest;
+      if (!p) return undefined;
+    }
+    return p;
+  }
+
+  function flattenObject(prefix: string, obj: Node, depth: number, out: Record<string, string> = facts.constants) {
     if (depth > 4) return;
     for (const p of obj.properties) {
       if (p.type !== 'ObjectProperty' || p.computed) continue;
@@ -93,8 +198,8 @@ export function parseJs(file: string, source: string): FileFacts | null {
       if (key === undefined) continue;
       const v = unwrap(p.value);
       const s = staticString(v);
-      if (s !== undefined) facts.constants[`${prefix}.${key}`] = s;
-      else if (v.type === 'ObjectExpression') flattenObject(`${prefix}.${key}`, v, depth + 1);
+      if (s !== undefined) out[`${prefix}.${key}`] = s;
+      else if (v.type === 'ObjectExpression') flattenObject(`${prefix}.${key}`, v, depth + 1, out);
     }
   }
 
@@ -141,6 +246,7 @@ export function parseJs(file: string, source: string): FileFacts | null {
 
   function visitCall(node: Node, env: Env) {
     const callee = node.callee;
+    if (visitCustom(node, env)) return;
     if (!isMember(callee)) return;
     const prop = propName(callee);
     if (!prop) return;
@@ -207,7 +313,59 @@ export function parseJs(file: string, source: string): FileFacts | null {
     }
   }
 
+  /** Calls to the project's own wrappers configured in the settings. */
+  function visitCustom(node: Node, env: Env): boolean {
+    if (!customNames.length) return false;
+    const fnPath = exprPath(node.callee);
+    if (!fnPath) return false;
+    const args = node.arguments ?? [];
+    if (matchesFn(custom.methodDefiners, fnPath)) addCustomDef(args, node, 'method', env);
+    else if (matchesFn(custom.publicationDefiners, fnPath)) addCustomDef(args, node, 'publication', env);
+    else if (matchesFn(custom.methodCallers, fnPath)) addCall(facts.calls, nameArg(args), fnPath, env);
+    else if (matchesFn(custom.subscribeCallers, fnPath)) addCall(facts.subscriptions, nameArg(args), fnPath, env);
+    else return false;
+    return true;
+  }
+
+  /**
+   * Supported shapes: `f('name', fn)`, `f('name', { run })`, `f({ name: 'x', run() {} })`,
+   * `f({ 'a.b'() {}, 'a.c'() {} })` (like Meteor.methods), and the same with a const object.
+   */
+  function addCustomDef(args: Node[], node: Node, kind: 'method' | 'publication', env: Env) {
+    const target = kind === 'method' ? facts.methods : facts.publications;
+    const first = args[0] && unwrap(args[0]);
+    if (!first) return;
+    const obj = resolveObject(first);
+    if (obj) {
+      const nameProp = findProp(obj, 'name');
+      if (nameProp) {
+        const n = nameOf(nameProp.value);
+        if (n) target.push(makeDef(n, kind, fnInObject(obj), node, env, undefined));
+      } else {
+        for (const p of obj.properties) addDefFromProperty(p, kind, env);
+      }
+      return;
+    }
+    const n = nameOf(first);
+    if (!n) return;
+    let fn: Node;
+    for (const a of args.slice(1)) {
+      const u = unwrap(a);
+      fn = fnOf(u) ?? (u?.type === 'ObjectExpression' ? fnInObject(u) : undefined);
+      if (fn) break;
+    }
+    target.push(makeDef(n, kind, fn, node, env, undefined));
+  }
+
+  /** `call('name', ...)` or `call({ name: 'x', ... })` */
+  function nameArg(args: Node[]): Node {
+    const first = args[0] && unwrap(args[0]);
+    if (first?.type === 'ObjectExpression') return findProp(first, 'name')?.value;
+    return first;
+  }
+
   function visitNew(node: Node, env: Env) {
+    if (visitCustom(node, env)) return;
     const c = node.callee;
     const isValidated = isIdent(c, 'ValidatedMethod') || (isMember(c) && propName(c) === 'ValidatedMethod');
     if (!isValidated) return;
@@ -300,10 +458,11 @@ export function parseJs(file: string, source: string): FileFacts | null {
     const node = unwrap(arg);
     const s = staticString(node);
     if (s !== undefined) return { name: s, start: node.start + 1, end: node.end - 1 };
-    const path = exprPath(node);
-    if (path) {
-      const c = facts.constants[path];
-      return c !== undefined ? { name: c, start: node.start, end: node.end } : { nameExpr: path, start: node.start, end: node.end };
+    const raw = exprPath(node);
+    const p = raw && expandAliases(raw);
+    if (p) {
+      const c = facts.constants[p];
+      return c !== undefined ? { name: c, start: node.start, end: node.end } : { nameExpr: p, start: node.start, end: node.end };
     }
     return undefined;
   }
@@ -350,6 +509,59 @@ export function parseJs(file: string, source: string): FileFacts | null {
     for (let i = comments.length - 1; i >= 0 && comments[i].type === 'CommentLine'; i--) lines.unshift(comments[i].value.trim());
     return lines.join('\n') || undefined;
   }
+}
+
+function matchesFn(list: string[], fnPath: string): boolean {
+  if (!list.length) return false;
+  const last = fnPath.slice(fnPath.lastIndexOf('.') + 1);
+  return list.some((n) => n === fnPath || (!n.includes('.') && n === last));
+}
+
+function findProp(obj: Node, key: string): Node | undefined {
+  return obj.properties.find((p: Node) => (p.type === 'ObjectProperty' || p.type === 'ObjectMethod') && !p.computed && literalKey(p.key) === key);
+}
+
+function fnInObject(obj: Node): Node | undefined {
+  for (const k of FN_PROPS) {
+    const p = findProp(obj, k);
+    if (!p) continue;
+    const fn = p.type === 'ObjectMethod' ? p : fnOf(p.value);
+    if (fn) return fn;
+  }
+  return undefined;
+}
+
+function forEachNode(node: Node, cb: (n: Node) => void): void {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const n of node) forEachNode(n, cb);
+    return;
+  }
+  if (typeof node.type !== 'string') return;
+  cb(node);
+  for (const key in node) {
+    if (SKIP_KEYS.has(key)) continue;
+    const v = node[key];
+    if (v && typeof v === 'object') forEachNode(v, cb);
+  }
+}
+
+/**
+ * Normalized identity of an imported module, used to find its `export default`:
+ * relative imports become absolute paths, Meteor absolute imports (`/imports/x`) are kept as a path suffix.
+ * Packages (`meteor/...`, npm) are ignored.
+ */
+function moduleHint(file: string, spec: string): string | undefined {
+  let hint: string;
+  if (spec.startsWith('.')) hint = path.posix.join(path.posix.dirname(file.replace(/\\/g, '/')), spec);
+  else if (spec.startsWith('/')) hint = spec;
+  else return undefined;
+  return hint.replace(JS_EXT, '').replace(/\/$/, '').toLowerCase();
+}
+
+/** Same normalization for the exporting file. */
+export function moduleId(file: string): string {
+  return file.replace(/\\/g, '/').replace(JS_EXT, '').toLowerCase();
 }
 
 function tryParse(file: string, text: string): Node | undefined {

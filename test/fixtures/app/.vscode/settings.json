@@ -1,0 +1,6 @@
+{
+  "meteorPower.methods.defineFunctions": ["createMethod", "defineMethods", "Method"],
+  "meteorPower.methods.callFunctions": ["callMethod"],
+  "meteorPower.publications.defineFunctions": ["createPublication"],
+  "meteorPower.publications.subscribeFunctions": ["useSubscribe"]
+}

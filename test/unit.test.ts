@@ -11,6 +11,18 @@ import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
 
 const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
 
+// same defaults as the extension (package.json) and the fixture's .vscode/settings.json
+const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
+const EXCLUDE: RegExp[] = manifest.contributes.configuration.properties['meteorPower.exclude'].default.map(globToRegExp);
+const settings = JSON.parse(fs.readFileSync(path.join(ROOT, '.vscode', 'settings.json'), 'utf8'));
+const OPTIONS = {
+  methodDefiners: settings['meteorPower.methods.defineFunctions'],
+  methodCallers: settings['meteorPower.methods.callFunctions'],
+  publicationDefiners: settings['meteorPower.publications.defineFunctions'],
+  subscribeCallers: settings['meteorPower.publications.subscribeFunctions'],
+};
+const slash = (p: string) => p.replace(/\\/g, '/');
+
 function walk(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = path.join(dir, e.name);
@@ -21,8 +33,9 @@ function walk(dir: string): string[] {
 
 const index = new MeteorIndex();
 for (const file of walk(ROOT)) {
+  if (EXCLUDE.some((re) => re.test(slash(file)))) continue;
   const text = fs.readFileSync(file, 'utf8');
-  const facts = file.endsWith('.html') ? parseHtml(file, text) : /\.(js|ts)$/.test(file) ? parseJs(file, text) : undefined;
+  const facts = file.endsWith('.html') ? parseHtml(file, text) : /\.(js|ts)$/.test(file) ? parseJs(file, text, OPTIONS) : undefined;
   if (facts) index.update(facts);
 }
 
@@ -57,7 +70,14 @@ function where(locs: { file: string }[]) {
 
 test('indexes methods with literal, constant, nested-constant and ValidatedMethod names', () => {
   const names = [...index.a.methods.keys()].sort();
-  assert.deepEqual(names, ['shared.ping', 'tasks.insert', 'tasks.serverOnly', 'tasks.toggle', 'users.profile.save', 'users.remove', 'users.reset', 'users.update']);
+  assert.deepEqual(names, [
+    'orders.archive',
+    'orders.cancel',
+    'orders.create',
+    'orders.restore',
+    'orders.ship',
+    'shared.ping',
+    'tasks.insert', 'tasks.serverOnly', 'tasks.toggle', 'users.profile.save', 'users.remove', 'users.reset', 'users.update']);
   assert.equal(index.a.methods.get('tasks.serverOnly')![0].env, 'server');
   assert.equal(index.a.methods.get('tasks.insert')![0].kind, 'validated');
   const update = index.a.methods.get('users.update')![0];
@@ -68,8 +88,8 @@ test('indexes methods with literal, constant, nested-constant and ValidatedMetho
 });
 
 test('indexes publications (string, object form, constant key) and skips null publications', () => {
-  assert.deepEqual([...index.a.publications.keys()].sort(), ['shared.items', 'users.list', 'users.one']);
-  assert.deepEqual([...index.a.subscriptions.keys()].sort(), ['shared.items', 'users.list', 'users.unknownPub']);
+  assert.deepEqual([...index.a.publications.keys()].sort(), ['orders.mine', 'shared.items', 'users.list', 'users.one']);
+  assert.deepEqual([...index.a.subscriptions.keys()].sort(), ['orders.mine', 'shared.items', 'users.list', 'users.unknownPub']);
 });
 
 test('Ctrl+click on a Meteor.callAsync string goes to the method definition', () => {
@@ -95,7 +115,8 @@ test('on a definition, go-to-definition returns itself and references list every
   const t = at('imports/api/users/methods.js', 'USERS_METHODS.RESET]', 2);
   assert.equal(t.type === 'method' && t.isDef, true);
   assert.deepEqual(definitions(index, t)[0].loc, t.loc);
-  assert.deepEqual(where(references(index, t, false)), ['imports/api/users/methods.js', 'imports/ui/layouts/layout.ts']);
+  // client/orders.js calls it twice: through an import alias (UM.RESET) and a destructured constant (RESET)
+  assert.deepEqual(where(references(index, t, false)), ['client/orders.js', 'client/orders.js', 'imports/api/users/methods.js', 'imports/ui/layouts/layout.ts']);
 });
 
 test('subscribe → publication', () => {
@@ -201,4 +222,43 @@ test('parser keeps going on broken files and returns null only when hopeless', (
   assert.ok(partial === null || partial.methods.length === 1);
   const html = parseHtml('x.html', '<template name="t">{{foo</template>');
   assert.equal(html.templates.length, 1);
+});
+
+test('custom wrappers: define and call methods/publications through project functions', () => {
+  const a = index.a;
+  const create = a.methods.get('orders.create')![0];
+  assert.deepEqual([create.params, create.isAsync], [['order'], true]);
+  assert.deepEqual(a.methods.get('orders.cancel')![0].params, ['{ orderId }']); // createMethod({ name, run })
+  assert.ok(a.methods.get('orders.archive')); // defineMethods({ ... })
+  assert.deepEqual(a.methods.get('orders.restore')![0].params, ['id']); // new Method('x', { run })
+  // the wrappers' own implementation (Meteor.methods({ [name]: handler })) does not produce fake definitions
+  const lib = index.facts(F('imports/lib/methods.js'))!;
+  assert.deepEqual(lib.methods.map((m) => a.resolve(m)).filter(Boolean), []);
+  assert.deepEqual(lib.calls.map((c) => a.resolve(c)).filter(Boolean), []);
+
+  const call = at('client/orders.js', "callMethod('orders.create'", 13);
+  assert.deepEqual(where(definitions(index, call).map((d) => d.loc)), ['imports/api/orders/methods.js']);
+  const sub = at('client/orders.js', "useSubscribe('orders.mine'", 15);
+  assert.equal(sub.type, 'publication');
+  assert.deepEqual(where(definitions(index, sub).map((d) => d.loc)), ['imports/api/orders/methods.js']);
+});
+
+test('aliases: import { X as Y }, destructuring, default imports (relative and /imports/...)', () => {
+  const name = (needle: string) => {
+    const t = at('client/orders.js', needle, 1);
+    return t.type === 'method' ? t.name : undefined;
+  };
+  assert.equal(name('UM.RESET'), 'users.reset');
+  assert.equal(name('RESET);'), 'users.reset');
+  assert.equal(name('OrderNames.CANCEL'), 'orders.cancel');
+  assert.equal(name('OrderNames.SHIP'), 'orders.ship');
+  // default import inside the definition file too: createMethod({ name: ORDERS.CANCEL }) and [ORDERS.SHIP]() {}
+  assert.equal(index.a.methods.get('orders.ship')!.length, 1);
+  assert.equal(index.a.methods.get('orders.cancel')!.length, 1);
+  assert.deepEqual(problems(index, F('client/orders.js'), { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }), []);
+});
+
+test('public/ is excluded by default: static HTML is not Blaze', () => {
+  assert.ok(EXCLUDE.some((re) => re.test(slash(F('public/landing.html')))));
+  assert.ok(!index.a.templateNames.has('notBlaze'));
 });

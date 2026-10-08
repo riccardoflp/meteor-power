@@ -1,3 +1,4 @@
+import { moduleId } from './jsParser';
 import { CallSite, FileFacts, HtmlMark, HtmlUsage, Member, MethodDef, NameSource, TemplateHtml, TemplatePart, TemplateRef } from './model';
 
 export type Named<T> = T & { name: string };
@@ -86,12 +87,38 @@ function buildAggregate(all: FileFacts[]): Aggregate {
     }
   }
 
+  // `export default` constants by module id (path without extension, lower case, `/` separators)
+  const defaults: { id: string; values: Record<string, string> }[] = [];
+  for (const f of all) if (Object.keys(f.defaultExport).length) defaults.push({ id: moduleId(f.file), values: f.defaultExport });
+
+  /** `@default(<module hint>).A.B` → the `A.B` value of the default export of that module. */
+  const resolveDefault = (expr: string): string | undefined => {
+    const close = expr.indexOf(')');
+    const hint = expr.slice('@default('.length, close);
+    const key = expr.slice(close + 2); // after ")."
+    const absolute = hint.startsWith('/') && !/^\/[a-z]:\//.test(hint) && !hint.startsWith('//');
+    const values = new Set<string>();
+    for (const d of defaults) {
+      const matches = absolute
+        ? d.id.endsWith(hint) || d.id.endsWith(hint + '/index')
+        : d.id === hint || d.id === hint + '/index';
+      const v = matches ? d.values[key] : undefined;
+      if (v !== undefined) values.add(v);
+    }
+    return values.size === 1 ? [...values][0] : undefined;
+  };
+
   const resolveCache = new Map<string, string | undefined>();
   const resolve = (ns: NameSource): string | undefined => {
     if (ns.name !== undefined) return ns.name;
     const expr = ns.nameExpr;
     if (!expr) return undefined;
     if (resolveCache.has(expr)) return resolveCache.get(expr);
+    if (expr.startsWith('@default(')) {
+      const v = resolveDefault(expr);
+      resolveCache.set(expr, v);
+      return v;
+    }
     // Try the full path, then drop leading segments: `C.USERS.RESET` (namespace import) → `USERS.RESET` → `RESET`.
     let result: string | undefined;
     const segs = expr.split('.');

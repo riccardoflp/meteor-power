@@ -113,6 +113,8 @@ export interface FileFacts {
   subscriptions: CallSite[];
   /** String constants declared at top level: `X` and flattened objects `X.Y.Z`. */
   constants: Record<string, string>;
+  /** `export default` as constants: `''` for a string, `Y.Z` for an object; resolved by file path. */
+  defaultExport: Record<string, string>;
   templateParts: TemplatePart[];
   templateRefs: TemplateRef[];
   globalHelpers: Member[];
@@ -129,6 +131,7 @@ export function emptyFacts(file: string): FileFacts {
     calls: [],
     subscriptions: [],
     constants: {},
+    defaultExport: {},
     templateParts: [],
     templateRefs: [],
     globalHelpers: [],
