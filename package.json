@@ -4,6 +4,9 @@
   "description": "Navigate Meteor and Blaze code: go to definition, references, hover and completion for methods, publications, templates and helpers, plus a side panel.",
   "version": "0.1.0",
   "publisher": "RiccardoFilippozzi",
+  "author": {
+    "name": "Riccardo Filippozzi"
+  },
   "license": "MIT",
   "repository": "https://github.com/riccardoflp/meteor-power",
   "bugs": {
