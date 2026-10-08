@@ -53,6 +53,19 @@ A bare name (`callMethod`) matches both `callMethod(...)` and `Api.callMethod(..
 
 Local variables (`{{#each item in items}}`, `{{#let}}`) and data context fields are never reported as errors.
 
+## Rename (F2)
+
+Press **F2** on a method, publication, template or helper, wherever it appears (definition, call, HTML), to rename it everywhere:
+
+| Renaming | Updates |
+|---|---|
+| Method / publication | the definition and every call or subscription; if the name comes from a constant (`[USERS_METHODS.RESET]`, `import NAMES from ...`), the constant's string is renamed and the references keep working |
+| Template | `<template name>`, `{{> x}}`, `{{#x}}…{{/x}}`, `Template.dynamic template="x"`, `Template.x` in JS, `BlazeLayout.render('x')` |
+| Helper | the key in `Template.x.helpers` (or `Template.registerHelper`) and its usages in the template HTML (every template, for global helpers) |
+
+Names that already exist are refused. Template and helper names must be valid identifiers.
+The changes are left unsaved, like any rename in VS Code: review them and save with **Ctrl+K S** (*Save All*).
+
 ## Side panel
 
 The Meteor Power icon in the Activity Bar opens:

@@ -205,6 +205,43 @@ checks.push([
   },
 ]);
 
+checks.push([
+  'rename provider: helper in HTML → JS key + HTML usage',
+  async () => {
+    const [doc, pos] = await posOf('imports/ui/components/userCard.html', '{{fullName}}', 4);
+    const we = await vscode.commands.executeCommand<vscode.WorkspaceEdit>('vscode.executeDocumentRenameProvider', doc.uri, pos, 'displayName');
+    const files = we.entries().map(([u, edits]) => `${rel(u)}:${edits.length}`).sort();
+    assert.deepEqual(files, ['client/legacy/logic/userCard.js:1', 'imports/ui/components/userCard.html:1']);
+  },
+]);
+
+checks.push([
+  'rename command (F2): renames a method in every file, then the changes are reverted',
+  async () => {
+    const [doc, pos] = await posOf('client/legacy/logic/userCard.js', "'users.update'", 3);
+    const editor = await vscode.window.showTextDocument(doc);
+    editor.selection = new vscode.Selection(pos, pos);
+    const original = vscode.window.showInputBox;
+    (vscode.window as any).showInputBox = async () => 'users.edit';
+    try {
+      await vscode.commands.executeCommand('meteorPower.rename');
+    } finally {
+      (vscode.window as any).showInputBox = original;
+    }
+    const defDoc = await vscode.workspace.openTextDocument(uri('imports/api/users/methods.js'));
+    const callText = doc.getText();
+    const defText = defDoc.getText();
+    // undo: revert both documents (nothing was saved to disk)
+    for (const d of [doc, defDoc]) {
+      await vscode.window.showTextDocument(d);
+      await vscode.commands.executeCommand('workbench.action.files.revert');
+    }
+    assert.ok(callText.includes("Meteor.callAsync('users.edit'"), 'call not renamed');
+    assert.ok(defText.includes("'users.edit': async function"), 'definition not renamed');
+    assert.ok(doc.getText().includes("'users.update'"), 'revert failed');
+  },
+]);
+
 export async function run(): Promise<void> {
   const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'meteor-power')!;
   api = await ext.activate();

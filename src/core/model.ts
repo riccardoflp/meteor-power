@@ -23,7 +23,15 @@ export type Env = 'server' | 'client' | 'both';
 export interface NameSource {
   name?: string;
   nameExpr?: string;
+  /**
+   * How the name is written at `loc`, which decides how to rename it:
+   * `string` → the text inside quotes, `ident` → an identifier (object key, `Template.foo`),
+   * `expr` → a reference to a constant (the constant's string is renamed instead).
+   */
+  nameKind: NameKind;
 }
+
+export type NameKind = 'string' | 'ident' | 'expr';
 
 export interface MethodDef extends NameSource {
   kind: 'method' | 'validated' | 'publication';
@@ -48,6 +56,7 @@ export interface CallSite extends NameSource {
 
 export interface Member {
   name: string;
+  nameKind: NameKind;
   loc: Loc;
   fullLoc: Loc;
   params: string[];
@@ -71,6 +80,7 @@ export interface TemplatePart {
 /** Any reference to a template from JS: `Template.foo`, `BlazeLayout.render('foo', { main: 'bar' })`. */
 export interface TemplateRef {
   template: string;
+  nameKind: NameKind;
   loc: Loc;
   lineText: string;
 }
@@ -97,6 +107,13 @@ export interface HtmlUsage {
   local: boolean;
 }
 
+/** `{{/foo}}`: the end of a block, renamed together with `{{#foo}}`. */
+export interface HtmlClose {
+  template: string;
+  name: string;
+  loc: Loc;
+}
+
 /** A class or id attribute value inside a template, used to link event maps to the HTML. */
 export interface HtmlMark {
   template: string;
@@ -115,12 +132,16 @@ export interface FileFacts {
   constants: Record<string, string>;
   /** `export default` as constants: `''` for a string, `Y.Z` for an object; resolved by file path. */
   defaultExport: Record<string, string>;
+  /** Where each constant / default export string is written (text inside the quotes), for renaming. */
+  constantLocs: Record<string, Loc>;
+  defaultExportLocs: Record<string, Loc>;
   templateParts: TemplatePart[];
   templateRefs: TemplateRef[];
   globalHelpers: Member[];
   templates: TemplateHtml[];
   htmlUsages: HtmlUsage[];
   htmlMarks: HtmlMark[];
+  htmlCloses: HtmlClose[];
 }
 
 export function emptyFacts(file: string): FileFacts {
@@ -132,11 +153,14 @@ export function emptyFacts(file: string): FileFacts {
     subscriptions: [],
     constants: {},
     defaultExport: {},
+    constantLocs: {},
+    defaultExportLocs: {},
     templateParts: [],
     templateRefs: [],
     globalHelpers: [],
     templates: [],
     htmlUsages: [],
     htmlMarks: [],
+    htmlCloses: [],
   };
 }

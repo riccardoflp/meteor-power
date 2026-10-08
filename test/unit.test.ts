@@ -8,6 +8,7 @@ import { MeteorIndex } from '../src/core/index';
 import { definitions, enclosingTemplate, problems, references, targetAt, Target } from '../src/core/queries';
 import { Loc, Pos } from '../src/core/model';
 import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
+import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
 
 const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
 
@@ -32,9 +33,11 @@ function walk(dir: string): string[] {
 }
 
 const index = new MeteorIndex();
+const sources = new Map<string, string>();
 for (const file of walk(ROOT)) {
   if (EXCLUDE.some((re) => re.test(slash(file)))) continue;
   const text = fs.readFileSync(file, 'utf8');
+  sources.set(file, text);
   const facts = file.endsWith('.html') ? parseHtml(file, text) : /\.(js|ts)$/.test(file) ? parseJs(file, text, OPTIONS) : undefined;
   if (facts) index.update(facts);
 }
@@ -76,6 +79,7 @@ test('indexes methods with literal, constant, nested-constant and ValidatedMetho
     'orders.create',
     'orders.restore',
     'orders.ship',
+    'ping',
     'shared.ping',
     'tasks.insert', 'tasks.serverOnly', 'tasks.toggle', 'users.profile.save', 'users.remove', 'users.reset', 'users.update']);
   assert.equal(index.a.methods.get('tasks.serverOnly')![0].env, 'server');
@@ -261,4 +265,124 @@ test('aliases: import { X as Y }, destructuring, default imports (relative and /
 test('public/ is excluded by default: static HTML is not Blaze', () => {
   assert.ok(EXCLUDE.some((re) => re.test(slash(F('public/landing.html')))));
   assert.ok(!index.a.templateNames.has('notBlaze'));
+});
+
+// ------------------------------------------------------------------------------------------- rename
+
+/** Applies the edits to the fixture sources in memory (the files on disk are untouched). */
+function applyEdits(edits: TextEdit[]): Map<string, string> {
+  const out = new Map(sources);
+  const byFile = new Map<string, TextEdit[]>();
+  for (const e of edits) byFile.set(e.loc.file, [...(byFile.get(e.loc.file) ?? []), e]);
+  for (const [file, list] of byFile) {
+    const text = out.get(file)!;
+    const starts = [0];
+    for (let i = 0; i < text.length; i++) if (text[i] === '\n') starts.push(i + 1);
+    const off = (p: Pos) => starts[p.line] + p.character;
+    let result = text;
+    for (const e of [...list].sort((x, y) => off(y.loc.range.start) - off(x.loc.range.start))) {
+      result = result.slice(0, off(e.loc.range.start)) + e.newText + result.slice(off(e.loc.range.end));
+    }
+    out.set(file, result);
+  }
+  return out;
+}
+
+function reindex(texts: Map<string, string>): MeteorIndex {
+  const idx = new MeteorIndex();
+  for (const [file, text] of texts) {
+    const facts = file.endsWith('.html') ? parseHtml(file, text) : parseJs(file, text, OPTIONS);
+    if (facts) idx.update(facts);
+  }
+  return idx;
+}
+
+function doRename(rel: string, needle: string, delta: number, newName: string) {
+  const r = renameEdits(index, at(rel, needle, delta), newName);
+  assert.ok('edits' in r, 'error' in r ? r.error : '');
+  const edits = (r as { edits: TextEdit[] }).edits;
+  return { edits, files: where(edits.map((e) => e.loc)), after: reindex(applyEdits(edits)) };
+}
+
+const noProblems = (idx: MeteorIndex, rel: string) =>
+  problems(idx, F(rel), { ignoreMethods: [], ignorePublications: [], ignoreTemplates: ['missingTemplate'] }).map((p) => p.message);
+
+test('rename method written as string literals: definition and calls', () => {
+  const { files, after } = doRename('client/legacy/logic/userCard.js', "'users.update'", 2, 'users.edit');
+  assert.deepEqual(files, ['client/legacy/logic/userCard.js', 'imports/api/users/methods.js']);
+  assert.ok(!after.a.methods.has('users.update'));
+  assert.equal(after.a.methods.get('users.edit')!.length, 1);
+  assert.equal(after.a.calls.get('users.edit')!.length, 1);
+});
+
+test('rename method defined through a constant: the constant string is renamed, references keep working', () => {
+  const { files, after } = doRename('imports/api/users/methods.js', 'USERS_METHODS.RESET]', 2, 'users.wipe');
+  // constants.js (RESET: '...') + the literal Meteor.callAsync('users.reset') in methods.js; UM.RESET / C.USERS_METHODS.RESET are untouched
+  assert.deepEqual(files, ['imports/api/users/constants.js', 'imports/api/users/methods.js']);
+  assert.ok(!after.a.methods.has('users.reset'));
+  assert.equal(after.a.methods.get('users.wipe')!.length, 1);
+  assert.equal(after.a.calls.get('users.wipe')!.length, 4);
+  assert.deepEqual(noProblems(after, 'client/orders.js'), []);
+});
+
+test('rename method from a default-export constant', () => {
+  const { files, after } = doRename('client/orders.js', 'OrderNames.CANCEL', 1, 'orders.abort');
+  assert.deepEqual(files, ['imports/api/orders/names.js']);
+  assert.equal(after.a.methods.get('orders.abort')!.length, 1);
+  assert.equal(after.a.calls.get('orders.abort')!.length, 1);
+});
+
+test('rename identifier method key to a dotted name adds quotes', () => {
+  const { edits, after } = doRename('imports/api/tasks/tasks.js', 'ping()', 1, 'tasks.ping');
+  assert.deepEqual(edits.map((e) => e.newText), ["'tasks.ping'"]);
+  assert.equal(after.a.methods.get('tasks.ping')!.length, 1);
+});
+
+test('rename template helper: JS key + HTML usages', () => {
+  const { files, after } = doRename('imports/ui/components/userCard.html', '{{fullName}}', 3, 'displayName');
+  assert.deepEqual(files, ['client/legacy/logic/userCard.js', 'imports/ui/components/userCard.html']);
+  assert.ok(after.a.helpers.get('userCard')!.has('displayName'));
+  assert.ok(after.a.usagesByTemplate.get('userCard')!.some((u) => u.name === 'displayName'));
+  assert.ok(!after.a.usagesByTemplate.get('userCard')!.some((u) => u.name === 'fullName'));
+});
+
+test('rename global helper: registerHelper string + usages in every template', () => {
+  const { files } = doRename('client/helpers.js', "'formatDate'", 2, 'fmtDate');
+  assert.deepEqual(files, ['client/helpers.js', 'imports/ui/components/userCard.html']);
+});
+
+test('rename block template: <template name>, {{#x}} and {{/x}}', () => {
+  const { files, after } = doRename('imports/ui/components/userCard.html', '{{#modal', 4, 'dialog');
+  assert.deepEqual(files, ['imports/ui/components/userCard.html', 'imports/ui/components/userCard.html', 'imports/ui/layouts/layout.html']);
+  assert.ok(after.a.templateNames.has('dialog') && !after.a.templateNames.has('modal'));
+  assert.deepEqual(after.a.closes.get('userCard')!.map((c) => c.name), ['dialog']);
+});
+
+test('rename template used from HTML, JS (Template.x), BlazeLayout and Template.dynamic', () => {
+  const { files, after } = doRename('imports/ui/components/userCard.html', 'name="userCard"', 7, 'memberCard');
+  assert.deepEqual(files, [
+    'client/legacy/logic/userCard.js',
+    'client/legacy/logic/userCard.js',
+    'client/legacy/logic/userCard.js',
+    'imports/startup/client/routes.js',
+    'imports/ui/components/userCard.html',
+    'imports/ui/layouts/layout.html',
+  ]);
+  assert.ok(!after.a.templateNames.has('userCard'));
+  assert.equal(after.a.parts.get('memberCard')!.length, 3);
+  assert.equal(after.a.inclusions.get('memberCard')!.length, 1);
+});
+
+test('rename refuses invalid or conflicting names', () => {
+  const err = (rel: string, needle: string, delta: number, name: string) => {
+    const r = renameEdits(index, at(rel, needle, delta), name);
+    return 'error' in r ? r.error : undefined;
+  };
+  assert.match(err('imports/ui/components/userCard.html', '{{> avatar', 5, 'my-avatar')!, /valid identifiers/);
+  assert.match(err('imports/ui/components/userCard.html', '{{> avatar', 5, 'modal')!, /already exists/);
+  assert.match(err('client/legacy/logic/userCard.js', "'users.update'", 2, 'users.remove')!, /already exists/);
+  assert.match(err('client/legacy/logic/userCard.js', "'users.update'", 2, "it's")!, /quotes/);
+  assert.match(err('imports/ui/components/userCard.html', 'modalTitle', 1, 'x')!, /data context/);
+  const ev = renameInfo(at('client/legacy/logic/userCard.js', "'click .js-save", 2));
+  assert.ok('error' in ev);
 });

@@ -17,5 +17,6 @@ if (Meteor.isServer) {
   Meteor.methods(taskMethods);
   Meteor.methods({
     'tasks.serverOnly'() {},
+    ping() {},
   });
 }

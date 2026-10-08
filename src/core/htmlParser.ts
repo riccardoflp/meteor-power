@@ -93,7 +93,14 @@ export function parseHtml(file: string, source: string): FileFacts {
     let s = start;
     while (s < end && /\s/.test(text[s])) s++;
     const lead = text[s];
-    if (lead === '/') return;
+    if (lead === '/') {
+      const close = /^\/\s*([\w$.\-]+)/.exec(text.slice(s, end));
+      if (close && !BLOCK_BUILTINS.has(close[1]) && !/^(Template|UI)\./.test(close[1])) {
+        const at = s + close[0].length - close[1].length;
+        facts.htmlCloses.push({ template, name: close[1], loc: loc(at, at + close[1].length) });
+      }
+      return;
+    }
     const mode = lead === '>' ? 'inclusion' : lead === '#' ? 'block' : 'plain';
     if (mode !== 'plain') s++;
     const toks = tokenize(s, end);

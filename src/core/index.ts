@@ -1,5 +1,5 @@
 import { moduleId } from './jsParser';
-import { CallSite, FileFacts, HtmlMark, HtmlUsage, Member, MethodDef, NameSource, TemplateHtml, TemplatePart, TemplateRef } from './model';
+import { CallSite, FileFacts, HtmlClose, HtmlMark, HtmlUsage, Loc, Member, MethodDef, NameSource, TemplateHtml, TemplatePart, TemplateRef } from './model';
 
 export type Named<T> = T & { name: string };
 export type TemplateMember = Member & { template: string };
@@ -31,9 +31,16 @@ export interface Aggregate {
   /** `{{> x}}` and `{{#x}}` usages, keyed by the included name. */
   inclusions: MultiMap<HtmlUsage>;
   marks: MultiMap<HtmlMark>;
+  /** `{{/x}}` by template */
+  closes: MultiMap<HtmlClose>;
   /** All known template names (HTML or JS). */
   templateNames: Set<string>;
   resolve(ns: NameSource): string | undefined;
+  /**
+   * Where the string of the constant behind a name reference is written (e.g. `RESET: 'users.reset'`
+   * for `USERS_METHODS.RESET`). `file` is the file containing the reference. Empty if not a constant reference.
+   */
+  constantLocs(ns: NameSource, file: string): Loc[];
 }
 
 export class MeteorIndex {
@@ -88,23 +95,36 @@ function buildAggregate(all: FileFacts[]): Aggregate {
   }
 
   // `export default` constants by module id (path without extension, lower case, `/` separators)
-  const defaults: { id: string; values: Record<string, string> }[] = [];
-  for (const f of all) if (Object.keys(f.defaultExport).length) defaults.push({ id: moduleId(f.file), values: f.defaultExport });
+  const defaults: { id: string; values: Record<string, string>; locs: Record<string, Loc> }[] = [];
+  for (const f of all) {
+    if (Object.keys(f.defaultExport).length) defaults.push({ id: moduleId(f.file), values: f.defaultExport, locs: f.defaultExportLocs });
+  }
+  const byFile = new Map(all.map((f) => [f.file, f]));
+  const constantEntries = new Map<string, { value: string; loc: Loc }[]>();
+  for (const f of all) {
+    for (const [k, v] of Object.entries(f.constants)) {
+      const l = f.constantLocs[k];
+      if (l) push(constantEntries, k, { value: v, loc: l });
+    }
+  }
 
-  /** `@default(<module hint>).A.B` → the `A.B` value of the default export of that module. */
-  const resolveDefault = (expr: string): string | undefined => {
+  /** `@default(<module hint>).A.B` → the default exports of that module having `A.B`. */
+  const defaultsFor = (expr: string) => {
     const close = expr.indexOf(')');
     const hint = expr.slice('@default('.length, close);
     const key = expr.slice(close + 2); // after ")."
     const absolute = hint.startsWith('/') && !/^\/[a-z]:\//.test(hint) && !hint.startsWith('//');
-    const values = new Set<string>();
+    const found: { value: string; loc: Loc | undefined }[] = [];
     for (const d of defaults) {
       const matches = absolute
         ? d.id.endsWith(hint) || d.id.endsWith(hint + '/index')
         : d.id === hint || d.id === hint + '/index';
-      const v = matches ? d.values[key] : undefined;
-      if (v !== undefined) values.add(v);
+      if (matches && d.values[key] !== undefined) found.push({ value: d.values[key], loc: d.locs[key] });
     }
+    return found;
+  };
+  const resolveDefault = (expr: string): string | undefined => {
+    const values = new Set(defaultsFor(expr).map((d) => d.value));
     return values.size === 1 ? [...values][0] : undefined;
   };
 
@@ -131,6 +151,25 @@ function buildAggregate(all: FileFacts[]): Aggregate {
     return result;
   };
 
+  const constantLocs = (ns: NameSource, file: string): Loc[] => {
+    if (ns.nameKind !== 'expr' || !ns.nameExpr) return [];
+    const value = resolve(ns);
+    if (value === undefined) return [];
+    const expr = ns.nameExpr;
+    const own = byFile.get(file)?.constantLocs[expr];
+    if (own) return [own];
+    if (expr.startsWith('@default(')) {
+      return defaultsFor(expr).flatMap((d) => (d.value === value && d.loc ? [d.loc] : []));
+    }
+    // same lookup order as `resolve`
+    const segs = expr.split('.');
+    for (let i = 0; i < segs.length; i++) {
+      const entries = constantEntries.get(segs.slice(i).join('.'))?.filter((e) => e.value === value);
+      if (entries?.length) return entries.map((e) => e.loc);
+    }
+    return [];
+  };
+
   const a: Aggregate = {
     methods: new Map(),
     calls: new Map(),
@@ -145,8 +184,10 @@ function buildAggregate(all: FileFacts[]): Aggregate {
     usagesByTemplate: new Map(),
     inclusions: new Map(),
     marks: new Map(),
+    closes: new Map(),
     templateNames: new Set(),
     resolve,
+    constantLocs,
   };
 
   const addNamed = <T extends NameSource>(map: MultiMap<Named<T>>, items: T[]) => {
@@ -184,6 +225,7 @@ function buildAggregate(all: FileFacts[]): Aggregate {
       if (u.kind !== 'helper') push(a.inclusions, u.name, u);
     }
     for (const m of f.htmlMarks) push(a.marks, m.template, m);
+    for (const c of f.htmlCloses) push(a.closes, c.template, c);
   }
   return a;
 }

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { parse, ParserPlugin } from '@babel/parser';
-import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, TemplatePartKind } from './model';
+import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, NameKind, TemplatePartKind } from './model';
 import { envFromPath, LineMap, makeSnippet, stripBom } from './text';
 
 // Babel AST nodes; typed loosely on purpose, we only read a handful of fields.
@@ -48,6 +48,7 @@ const JS_EXT = /\.(js|jsx|mjs|cjs|ts|tsx|mts|cts)$/i;
 interface NameResult {
   name?: string;
   nameExpr?: string;
+  kind: NameKind;
   start: number;
   end: number;
 }
@@ -99,7 +100,10 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
           if (d.id?.type !== 'Identifier' || !d.init) continue;
           const init = unwrap(d.init);
           const s = staticString(init);
-          if (s !== undefined) facts.constants[d.id.name] = s;
+          if (s !== undefined) {
+            facts.constants[d.id.name] = s;
+            facts.constantLocs[d.id.name] = loc(init.start + 1, init.end - 1);
+          }
           else if (init.type === 'ObjectExpression') {
             objects.set(d.id.name, init);
             flattenObject(d.id.name, init, 0);
@@ -111,7 +115,10 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
         for (const m of decl.members ?? decl.body?.members ?? []) {
           const key = m.id?.type === 'Identifier' ? m.id.name : m.id?.value;
           const s = m.initializer && staticString(m.initializer);
-          if (key && s !== undefined) facts.constants[`${decl.id.name}.${key}`] = s;
+          if (key && s !== undefined) {
+            facts.constants[`${decl.id.name}.${key}`] = s;
+            facts.constantLocs[`${decl.id.name}.${key}`] = loc(m.initializer.start + 1, m.initializer.end - 1);
+          }
         }
       }
     }
@@ -122,19 +129,31 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     const s = staticString(node);
     if (s !== undefined) {
       facts.defaultExport[''] = s;
+      facts.defaultExportLocs[''] = loc(node.start + 1, node.end - 1);
       return;
     }
     if (node.type === 'ObjectExpression') {
       const tmp: Record<string, string> = {};
-      flattenObject('', node, 0, tmp);
-      for (const [k, v] of Object.entries(tmp)) facts.defaultExport[k.slice(1)] = v;
+      const tmpLocs: Record<string, Loc> = {};
+      flattenObject('', node, 0, tmp, tmpLocs);
+      for (const [k, v] of Object.entries(tmp)) {
+        facts.defaultExport[k.slice(1)] = v;
+        facts.defaultExportLocs[k.slice(1)] = tmpLocs[k];
+      }
       return;
     }
     // `const X = {...}; export default X;`
     if (node.type === 'Identifier') {
       const prefix = node.name;
-      if (facts.constants[prefix] !== undefined) facts.defaultExport[''] = facts.constants[prefix];
-      for (const [k, v] of Object.entries(facts.constants)) if (k.startsWith(prefix + '.')) facts.defaultExport[k.slice(prefix.length + 1)] = v;
+      if (facts.constants[prefix] !== undefined) {
+        facts.defaultExport[''] = facts.constants[prefix];
+        facts.defaultExportLocs[''] = facts.constantLocs[prefix];
+      }
+      for (const [k, v] of Object.entries(facts.constants)) {
+        if (!k.startsWith(prefix + '.')) continue;
+        facts.defaultExport[k.slice(prefix.length + 1)] = v;
+        facts.defaultExportLocs[k.slice(prefix.length + 1)] = facts.constantLocs[k];
+      }
     }
   }
 
@@ -190,7 +209,13 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     return p;
   }
 
-  function flattenObject(prefix: string, obj: Node, depth: number, out: Record<string, string> = facts.constants) {
+  function flattenObject(
+    prefix: string,
+    obj: Node,
+    depth: number,
+    out: Record<string, string> = facts.constants,
+    outLocs: Record<string, Loc> = facts.constantLocs,
+  ) {
     if (depth > 4) return;
     for (const p of obj.properties) {
       if (p.type !== 'ObjectProperty' || p.computed) continue;
@@ -198,8 +223,10 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       if (key === undefined) continue;
       const v = unwrap(p.value);
       const s = staticString(v);
-      if (s !== undefined) out[`${prefix}.${key}`] = s;
-      else if (v.type === 'ObjectExpression') flattenObject(`${prefix}.${key}`, v, depth + 1, out);
+      if (s !== undefined) {
+        out[`${prefix}.${key}`] = s;
+        outLocs[`${prefix}.${key}`] = loc(v.start + 1, v.end - 1);
+      } else if (v.type === 'ObjectExpression') flattenObject(`${prefix}.${key}`, v, depth + 1, out, outLocs);
     }
   }
 
@@ -232,7 +259,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       case 'MemberExpression':
       case 'OptionalMemberExpression': {
         const t = templateNameOf(node);
-        if (t) facts.templateRefs.push({ template: t.name!, loc: loc(t.start, t.end), lineText: lm.lineText(lm.pos(t.start).line) });
+        if (t) facts.templateRefs.push({ template: t.name!, nameKind: t.kind, loc: loc(t.start, t.end), lineText: lm.lineText(lm.pos(t.start).line) });
         break;
       }
     }
@@ -294,20 +321,20 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
 
     if (isIdent(obj, 'Template') && prop === 'registerHelper') {
       const n = nameOf(args[0]);
-      if (n?.name) facts.globalHelpers.push(makeMember(n.name, n.start, n.end, fnOf(args[1]), node, undefined));
+      if (n?.name) facts.globalHelpers.push(makeMember(n, fnOf(args[1]), node, undefined));
       return;
     }
 
     // BlazeLayout.render('layout', { main: 'page' })
     if (isIdent(obj, 'BlazeLayout') && prop === 'render') {
       const n = nameOf(args[0]);
-      if (n?.name) addTemplateRef(n.name, n.start, n.end);
+      if (n?.name) addTemplateRef(n.name, n.kind, n.start, n.end);
       const o = args[1] && unwrap(args[1]);
       if (o?.type === 'ObjectExpression') {
         for (const p of o.properties) {
           if (p.type !== 'ObjectProperty') continue;
           const s = staticString(p.value);
-          if (s) addTemplateRef(s, p.value.start + 1, p.value.end - 1);
+          if (s) addTemplateRef(s, 'string', p.value.start + 1, p.value.end - 1);
         }
       }
     }
@@ -394,6 +421,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     return {
       name: n.name,
       nameExpr: n.nameExpr,
+      nameKind: n.kind,
       kind,
       loc: loc(n.start, n.end),
       fullLoc: loc(full.start, full.end),
@@ -413,15 +441,16 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       const n = keyName(p);
       if (!n?.name) continue;
       const fn = p.type === 'ObjectMethod' ? p : fnOf(p.value);
-      out.push(makeMember(n.name, n.start, n.end, fn, p, docOf(p)));
+      out.push(makeMember(n, fn, p, docOf(p)));
     }
     return out;
   }
 
-  function makeMember(name: string, start: number, end: number, fn: Node, full: Node, doc: string | undefined): Member {
+  function makeMember(n: NameResult, fn: Node, full: Node, doc: string | undefined): Member {
     return {
-      name,
-      loc: loc(start, end),
+      name: n.name!,
+      nameKind: n.kind,
+      loc: loc(n.start, n.end),
       fullLoc: loc(full.start, full.end),
       params: paramsOf(fn),
       isAsync: !!fn?.async,
@@ -433,11 +462,11 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
   function addCall(target: CallSite[], arg: Node, fn: string, env: Env) {
     const n = nameOf(arg);
     if (!n) return;
-    target.push({ name: n.name, nameExpr: n.nameExpr, fn, loc: loc(n.start, n.end), env, lineText: lm.lineText(lm.pos(n.start).line) });
+    target.push({ name: n.name, nameExpr: n.nameExpr, nameKind: n.kind, fn, loc: loc(n.start, n.end), env, lineText: lm.lineText(lm.pos(n.start).line) });
   }
 
-  function addTemplateRef(name: string, start: number, end: number) {
-    facts.templateRefs.push({ template: name, loc: loc(start, end), lineText: lm.lineText(lm.pos(start).line) });
+  function addTemplateRef(name: string, nameKind: NameKind, start: number, end: number) {
+    facts.templateRefs.push({ template: name, nameKind, loc: loc(start, end), lineText: lm.lineText(lm.pos(start).line) });
   }
 
   /** `Template.foo` / `Template['foo-bar']` → the template name and the range of `foo`. */
@@ -446,9 +475,9 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     const p = node.property;
     if (!node.computed && p.type === 'Identifier') {
       if (TEMPLATE_STATICS.has(p.name) || p.name.startsWith('_')) return undefined;
-      return { name: p.name, start: p.start, end: p.end };
+      return { name: p.name, kind: 'ident', start: p.start, end: p.end };
     }
-    if (node.computed && p.type === 'StringLiteral') return { name: p.value, start: p.start + 1, end: p.end - 1 };
+    if (node.computed && p.type === 'StringLiteral') return { name: p.value, kind: 'string', start: p.start + 1, end: p.end - 1 };
     return undefined;
   }
 
@@ -457,12 +486,12 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     if (!arg) return undefined;
     const node = unwrap(arg);
     const s = staticString(node);
-    if (s !== undefined) return { name: s, start: node.start + 1, end: node.end - 1 };
+    if (s !== undefined) return { name: s, kind: 'string', start: node.start + 1, end: node.end - 1 };
     const raw = exprPath(node);
     const p = raw && expandAliases(raw);
     if (p) {
       const c = facts.constants[p];
-      return c !== undefined ? { name: c, start: node.start, end: node.end } : { nameExpr: p, start: node.start, end: node.end };
+      return { name: c, nameExpr: p, kind: 'expr', start: node.start, end: node.end };
     }
     return undefined;
   }
@@ -471,9 +500,9 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     const k = p.key;
     if (!k) return undefined;
     if (!p.computed) {
-      if (k.type === 'Identifier') return { name: k.name, start: k.start, end: k.end };
-      if (k.type === 'StringLiteral') return { name: k.value, start: k.start + 1, end: k.end - 1 };
-      if (k.type === 'NumericLiteral') return { name: String(k.value), start: k.start, end: k.end };
+      if (k.type === 'Identifier') return { name: k.name, kind: 'ident', start: k.start, end: k.end };
+      if (k.type === 'StringLiteral') return { name: k.value, kind: 'string', start: k.start + 1, end: k.end - 1 };
+      if (k.type === 'NumericLiteral') return { name: String(k.value), kind: 'ident', start: k.start, end: k.end };
       return undefined;
     }
     return nameOf(k);

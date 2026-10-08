@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { MeteorIndex } from './core/index';
 import { registerCommands } from './vscode/commands';
+import { registerRename } from './vscode/rename';
 import { WorkspaceIndexer } from './vscode/indexer';
 import { MeteorCodeLensProvider, MeteorDiagnostics, registerProviders, SELECTOR } from './vscode/providers';
 import { NamesTree, TemplatesMode, TemplatesTree } from './vscode/trees';
@@ -36,6 +37,7 @@ export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
   );
 
   registerCommands(ctx, indexer, templatesTree);
+  registerRename(ctx, indexer);
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
   status.command = 'workbench.view.extension.meteorPower';

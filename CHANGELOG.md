@@ -25,3 +25,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings for your own wrapper functions that define or call methods and publications (`meteorPower.methods.defineFunctions`, `callFunctions`, `meteorPower.publications.defineFunctions`, `subscribeFunctions`)
 - Constant names are also resolved through `import { X as Y }`, default imports (`import NAMES from './names'`) and destructuring (`const { RESET } = USERS_METHODS`)
 - `public/` is excluded from indexing by default (static files, not Blaze)
+- **Rename (F2)** of methods, publications, templates and helpers across JS and HTML; names coming from constants are renamed in the constant
