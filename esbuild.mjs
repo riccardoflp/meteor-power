@@ -24,6 +24,8 @@ if (tests) {
     { ...common, entryPoints: ['test/integration/run.ts'], outfile: 'out/test/integration/run.js', external: ['vscode', '@vscode/test-electron'] },
     { ...common, entryPoints: ['test/integration/suite.ts'], outfile: 'out/test/integration/suite.js' },
     { ...common, entryPoints: ['test/integration/multi.ts'], outfile: 'out/test/integration/multi.js' },
+    { ...common, entryPoints: ['test/screenshots/run.ts'], outfile: 'out/test/screenshots/run.js', external: ['vscode', '@vscode/test-electron'] },
+    { ...common, entryPoints: ['test/screenshots/shoot.ts'], outfile: 'out/test/screenshots/shoot.js' },
   );
 }
 

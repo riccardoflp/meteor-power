@@ -1,0 +1,8 @@
+<template name="taskItem">
+  <li class="task {{#if task.checked}}checked{{/if}}">
+    <input type="checkbox" class="js-toggle" checked={{task.checked}}>
+    <span class="text">{{task.text}}</span>
+    <small>{{timeAgo task.createdAt}}</small>
+    <button class="js-delete">&times;</button>
+  </li>
+</template>

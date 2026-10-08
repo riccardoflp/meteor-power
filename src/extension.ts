@@ -11,6 +11,8 @@ export interface MeteorPowerApi {
   ready: () => Promise<void>;
   trees: { methods: NamesTree; publications: NamesTree; templates: TemplatesTree };
   filter: AppFilter;
+  /** The side panel views (used by the screenshot script). */
+  views: { methods: vscode.TreeView<unknown>; publications: vscode.TreeView<unknown>; templates: vscode.TreeView<unknown> };
 }
 
 export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
@@ -70,7 +72,13 @@ export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
   );
 
   void indexer.rescan();
-  return { index, ready: () => indexer.ready, trees: { methods: methodsTree, publications: publicationsTree, templates: templatesTree }, filter };
+  return {
+    index,
+    ready: () => indexer.ready,
+    trees: { methods: methodsTree, publications: publicationsTree, templates: templatesTree },
+    filter,
+    views: { methods: views[0], publications: views[1], templates: views[2] },
+  };
 }
 
 export function deactivate() {}

@@ -1,0 +1,16 @@
+<template name="listPage">
+  <h1>{{list.name}}</h1>
+  {{#if Template.subscriptionsReady}}
+    <ul class="tasks">
+      {{#each task in tasks}}
+        {{> taskItem task=task}}
+      {{/each}}
+    </ul>
+    <p class="muted">{{remainingCount}} left · created {{formatDate list.createdAt}}</p>
+  {{else}}
+    {{> loading}}
+  {{/if}}
+  <form class="js-new-task">
+    <input type="text" name="text" placeholder="What needs to be done?">
+  </form>
+</template>

@@ -369,6 +369,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node esbuild.mjs --tests && node --test out/test/unit.test.js",
     "test:integration": "node esbuild.mjs --tests && node out/test/integration/run.js",
+    "screenshots": "node esbuild.mjs --tests && node out/test/screenshots/run.js",
     "package": "vsce package"
   },
   "dependencies": {

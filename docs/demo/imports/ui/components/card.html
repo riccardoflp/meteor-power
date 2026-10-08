@@ -1,0 +1,10 @@
+<template name="baseCard">
+  <div class="card">{{title}}</div>
+</template>
+
+<template name="listCard">
+  <a class="card" href="/lists/{{list._id}}">
+    <h3>{{title}}</h3>
+    <small>{{taskCount}} tasks · {{formatDate list.createdAt}}</small>
+  </a>
+</template>

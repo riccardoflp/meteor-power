@@ -1,0 +1,7 @@
+meteor-base@1.5.2
+mongo
+blaze-html-templates
+mdg:validated-method
+aldeed:template-extension
+kadira:flow-router
+kadira:blaze-layout

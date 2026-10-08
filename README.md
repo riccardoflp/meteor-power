@@ -4,6 +4,8 @@ Navigate **Meteor 3** and **Blaze** projects as if names were real symbols inste
 
 Meteor Power indexes the whole workspace and links things **by name**, so it works even when HTML, JS, methods and constants live in different folders.
 
+![Side panel with methods, publications and templates; hover on a helper used in the HTML](docs/images/overview.png)
+
 ## Methods and publications
 
 | Where | What it does |
@@ -15,6 +17,10 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 | Hover | signature, environment (server/client), file, JSDoc, number of calls |
 | CodeLens | `N calls` above each method, `N subscriptions` above each publication |
 | Diagnostics | warning on calls to undefined methods or publications |
+
+![Hover on a method called through a constant: signature, environment, file, JSDoc and number of calls](docs/images/hover-method.png)
+
+![Completion of method names inside Meteor.callAsync](docs/images/completion-methods.png)
 
 Names can also be **constants**, resolved across the whole workspace:
 `Meteor.callAsync(USERS_METHODS.RESET)`, `[USERS_METHODS.RESET]() {}`, TypeScript enums and `Object.freeze({...})`, also through
@@ -53,6 +59,8 @@ A bare name (`callMethod`) matches both `callMethod(...)` and `Api.callMethod(..
 
 Local variables (`{{#each item in items}}`, `{{#let}}`) and data context fields are never reported as errors.
 
+![Completion inside {{ }}: the template's own helpers, inherited ones and global ones](docs/images/completion-helpers.png)
+
 ### Template inheritance (aldeed:template-extension)
 
 | Call | Effect |
@@ -74,6 +82,8 @@ Press **F2** on a method, publication, template or helper, wherever it appears (
 | Template | `<template name>`, `{{> x}}`, `{{#x}}…{{/x}}`, `Template.dynamic template="x"`, `Template.x` in JS, `BlazeLayout.render('x')` |
 | Helper | the key in `Template.x.helpers` (or `Template.registerHelper`) and its usages in the template HTML (every template, for global helpers) |
 
+![Renaming a method with F2](docs/images/rename.png)
+
 Names that already exist are refused. Template and helper names must be valid identifiers.
 The changes are left unsaved, like any rename in VS Code: review them and save with **Ctrl+K S** (*Save All*).
 
@@ -90,6 +100,8 @@ Then everything is resolved inside the app of the file you are in: `Meteor.callA
 
 From shared code, everything of every app linking it is visible, and the diagnostics report names that are missing in **some** of those apps:
 `Meteor method 'admin.purge' is not defined in app 'web'.` (the shared file runs in `web` too, where the call would fail).
+
+![Shared code opened through the symlink of the admin app: the method exists only in admin](docs/images/multi-app.png)
 
 Rename (F2) changes only the apps that use the name; if shared code uses it, all the apps linking that code are renamed together.
 
@@ -127,6 +139,7 @@ npm install
 npm test                  # unit tests on the core (parsers + index)
 npm run test:integration  # tests inside VS Code (uses the installed VS Code)
 npm run package           # builds meteor-power-<version>.vsix
+npm run screenshots       # retakes the README screenshots from docs/demo (Windows)
 ```
 
 To debug it, open this folder in VS Code and press **F5**.

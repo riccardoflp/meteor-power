@@ -140,6 +140,11 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
     }
   }
 
+  /** Only root nodes can be revealed. */
+  getParent(): undefined {
+    return undefined;
+  }
+
   getTreeItem(node: NameNode): vscode.TreeItem {
     const isMethod = this.mode === 'methods';
     switch (node.kind) {
@@ -229,6 +234,8 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
   readonly onDidChangeTreeData = this.emitter.event;
   private children: Map<string, Set<string>> | undefined;
   private roots: string[] | undefined;
+  /** Root nodes are kept until the next refresh, so that `TreeView.reveal` can find them. */
+  private rootNodes: TplNode[] | undefined;
 
   constructor(
     private readonly indexer: WorkspaceIndexer,
@@ -242,6 +249,7 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
   refresh() {
     this.children = undefined;
     this.roots = undefined;
+    this.rootNodes = undefined;
     this.emitter.fire(undefined);
   }
 
@@ -319,10 +327,11 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
     const a = this.a;
     const scope = this.filter.scope;
     if (!node) {
+      if (this.rootNodes) return this.rootNodes;
       const out: TplNode[] = [];
       if (this.globals().length) out.push({ kind: 'globals' });
       for (const name of this.rootNames()) out.push({ kind: 'template', name, ancestors: [] });
-      return out;
+      return (this.rootNodes = out);
     }
     switch (node.kind) {
       case 'globals':

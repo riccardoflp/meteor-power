@@ -1,0 +1,9 @@
+<template name="homePage">
+  <h1>My lists</h1>
+  {{#each list in lists}}
+    {{> listCard list=list}}
+  {{else}}
+    <p class="muted">No lists yet.</p>
+  {{/each}}
+  <button class="js-new-list">New list</button>
+</template>
