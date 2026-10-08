@@ -30,8 +30,12 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
 
   const target = (doc: vscode.TextDocument, pos: vscode.Position): Target | undefined => {
     indexer.syncDocument(doc);
-    return targetAt(index, doc.uri.fsPath, toPos(pos));
+    return targetAt(index, indexer.keyOf(doc.uri.fsPath), toPos(pos));
   };
+
+  /** Index locations use real paths: map those in the current document back to its URI (it may be opened via a symlink). */
+  const uriIn = (doc: vscode.TextDocument, l: Loc): vscode.Uri =>
+    l.file === indexer.keyOf(doc.uri.fsPath) ? doc.uri : vscode.Uri.file(l.file);
 
   ctx.subscriptions.push(
     vscode.languages.registerDefinitionProvider(SELECTOR, {
@@ -41,7 +45,7 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
         return definitions(index, t).map(
           (d): vscode.LocationLink => ({
             originSelectionRange: toRange(t.loc),
-            targetUri: vscode.Uri.file(d.loc.file),
+            targetUri: uriIn(doc, d.loc),
             targetRange: toRange(d.full ?? d.loc),
             targetSelectionRange: toRange(d.loc),
           }),
@@ -53,7 +57,7 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
       provideReferences(doc, pos, context) {
         const t = target(doc, pos);
         if (!t) return undefined;
-        return references(index, t, context.includeDeclaration).map(toLocation);
+        return references(index, t, context.includeDeclaration).map((l) => new vscode.Location(uriIn(doc, l), toRange(l)));
       },
     }),
 
@@ -73,7 +77,7 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
     vscode.languages.registerDocumentSymbolProvider({ scheme: 'file', pattern: '**/*.html' }, {
       provideDocumentSymbols(doc) {
         indexer.syncDocument(doc);
-        const f = index.facts(doc.uri.fsPath);
+        const f = index.facts(indexer.keyOf(doc.uri.fsPath));
         return (f?.templates ?? []).map(
           (t) => new vscode.DocumentSymbol(t.name, 'Blaze template', vscode.SymbolKind.Class, toRange(t.fullLoc), toRange(t.loc)),
         );
@@ -233,7 +237,7 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
     };
 
     const helperItems = () => {
-      const tpl = enclosingTemplate(index, doc.uri.fsPath, toPos(pos));
+      const tpl = enclosingTemplate(index, indexer.keyOf(doc.uri.fsPath), toPos(pos));
       const own = tpl ? a.helpers.get(tpl) : undefined;
       for (const [name, defs] of own ?? []) items.push(helperItem(name, defs[0], `helper of ${tpl}`, '0'));
       for (const [name, defs] of a.globalHelpers) if (!own?.has(name)) items.push(helperItem(name, defs[0], 'global helper', '1'));
@@ -309,7 +313,7 @@ export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
     if (!vscode.workspace.getConfiguration('meteorpower').get<boolean>('codeLens.enabled', true)) return [];
     this.indexer.syncDocument(doc);
     const index = this.indexer.index;
-    const f = index.facts(doc.uri.fsPath);
+    const f = index.facts(this.indexer.keyOf(doc.uri.fsPath));
     if (!f) return [];
     const a = index.a;
     const lenses: vscode.CodeLens[] = [];

@@ -129,7 +129,7 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       if (!editor) return;
       const doc = editor.document;
       indexer.syncDocument(doc);
-      const file = doc.uri.fsPath;
+      const file = indexer.keyOf(doc.uri.fsPath);
       let name = enclosingTemplate(index, file, toPos(editor.selection.active));
       if (!name) {
         const names = templatesInFile(index, file);

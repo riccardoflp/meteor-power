@@ -163,6 +163,32 @@ checks.push([
   },
 ]);
 
+checks.push([
+  'symlinked folders: a file reachable from 4 paths is indexed once',
+  async () => {
+    const found = await vscode.workspace.findFiles('**/shared.js');
+    assert.equal(found.length, 4, `findFiles should see the file through the 3 links too: ${found.map(rel).join(', ')}`);
+    assert.equal(api.index.a.publications.get('shared.items')?.length, 1);
+    const defs = api.index.a.methods.get('shared.ping');
+    assert.equal(defs?.length, 1);
+    assert.equal(rel(vscode.Uri.file(defs[0].loc.file)), 'common/shared.js');
+
+    // from a call site: go to the real file
+    const [doc, pos] = await posOf('client/sharedUsage.js', "'shared.ping'", 2);
+    const d = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', doc.uri, pos);
+    assert.deepEqual(d.map((x) => rel(targetUri(x))), ['common/shared.js']);
+
+    // the file opened through a link still works and does not create duplicates
+    const [linked, lpos] = await posOf('apps/b/imports/common/shared.js', "'shared.ping'", 2);
+    await vscode.window.showTextDocument(linked);
+    const self = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', linked.uri, lpos);
+    assert.equal(rel(targetUri(self[0])), 'apps/b/imports/common/shared.js');
+    const refs = await vscode.commands.executeCommand<vscode.Location[]>('vscode.executeReferenceProvider', linked.uri, lpos);
+    assert.ok(refs.some((r) => rel(r.uri) === 'client/sharedUsage.js'));
+    assert.equal(api.index.a.methods.get('shared.ping')?.length, 1);
+  },
+]);
+
 export async function run(): Promise<void> {
   const ext = vscode.extensions.all.find((e) => e.packageJSON.name === 'meteorpower')!;
   api = await ext.activate();

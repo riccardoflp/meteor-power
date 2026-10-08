@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { MeteorIndex } from '../core/index';
 import { parseHtml } from '../core/htmlParser';
@@ -18,6 +19,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
   private excludes: RegExp[] = [];
   private watcher: vscode.FileSystemWatcher | undefined;
   private scanId = 0;
+  /** path as seen by VS Code → real path on disk (symlinks resolved) */
+  private readonly realPaths = new Map<string, string>();
 
   /** Fired (debounced) whenever the index content changes. */
   readonly onDidChange = this.changeEmitter.event;
@@ -59,16 +62,25 @@ export class WorkspaceIndexer implements vscode.Disposable {
     this.watcher.onDidCreate((u) => this.onDiskChange(u));
     this.watcher.onDidChange((u) => this.onDiskChange(u));
     this.watcher.onDidDelete((u) => {
-      this.index.remove(u.fsPath);
+      this.index.remove(this.keyOf(u.fsPath));
+      this.realPaths.delete(u.fsPath);
       this.fireChange();
     });
 
     const excludeGlob = exclude.length ? `{${exclude.join(',')}}` : undefined;
-    const uris = await vscode.workspace.findFiles(include, excludeGlob);
+    let uris = await vscode.workspace.findFiles(include, excludeGlob);
     if (id !== this.scanId) return;
 
     this.index.clear();
     this.versions.clear();
+    this.realPaths.clear();
+    // the same file reached through several symlinked folders is indexed once, under its real path
+    const unique = new Map<string, vscode.Uri>();
+    for (const u of uris) {
+      const key = this.keyOf(u.fsPath);
+      if (!unique.has(key)) unique.set(key, u);
+    }
+    uris = [...unique.values()];
     const BATCH = 64;
     for (let i = 0; i < uris.length; i += BATCH) {
       await Promise.all(uris.slice(i, i + BATCH).map((u) => this.indexFile(u, false)));
@@ -77,6 +89,27 @@ export class WorkspaceIndexer implements vscode.Disposable {
     // open editors may contain unsaved changes
     for (const d of vscode.workspace.textDocuments) this.syncDocument(d);
     this.fireChange(true);
+  }
+
+  /**
+   * The key under which a file is indexed: its real path, so that a file reachable through
+   * symlinked folders is indexed (and shown) once. Locations in the index always use this path.
+   */
+  keyOf(fsPath: string): string {
+    let key = this.realPaths.get(fsPath);
+    if (key === undefined) {
+      key = fsPath;
+      try {
+        const real = fs.realpathSync.native(fsPath);
+        const same = process.platform === 'linux' ? real === fsPath : real.toLowerCase() === fsPath.toLowerCase();
+        // normalize like VS Code does (lower-case drive letter on Windows)
+        if (!same) key = vscode.Uri.file(real).fsPath;
+      } catch {
+        // missing file: keep the path as is
+      }
+      this.realPaths.set(fsPath, key);
+    }
+    return key;
   }
 
   /** Makes sure the index reflects the current text of a document (call before answering a query on it). */
@@ -89,7 +122,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
       clearTimeout(t);
       this.pending.delete(file);
     }
-    const facts = parse(file, doc.getText());
+    const facts = parse(this.keyOf(file), doc.getText());
     this.versions.set(file, doc.version);
     if (facts) {
       this.index.update(facts);
@@ -111,7 +144,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
   }
 
   private onDiskChange(uri: vscode.Uri) {
-    const open = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === uri.fsPath);
+    const key = this.keyOf(uri.fsPath);
+    const open = vscode.workspace.textDocuments.find((d) => this.keyOf(d.uri.fsPath) === key);
     if (open) {
       if (!open.isDirty) this.syncDocument(open);
       return;
@@ -125,11 +159,11 @@ export class WorkspaceIndexer implements vscode.Disposable {
       const stat = await vscode.workspace.fs.stat(uri);
       if (stat.size > MAX_SIZE) return;
       const bytes = await vscode.workspace.fs.readFile(uri);
-      const facts = parse(uri.fsPath, Buffer.from(bytes).toString('utf8'));
+      const facts = parse(this.keyOf(uri.fsPath), Buffer.from(bytes).toString('utf8'));
       if (facts) this.index.update(facts);
       if (notify) this.fireChange();
     } catch {
-      this.index.remove(uri.fsPath);
+      this.index.remove(this.keyOf(uri.fsPath));
     }
   }
 

@@ -3,3 +3,6 @@ dist/
 out/
 .vscode-test/
 *.vsix
+
+# created by test/integration/run.ts (symlinked folders)
+test/fixtures/app/apps/

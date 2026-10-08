@@ -14,6 +14,7 @@ const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
 function walk(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = path.join(dir, e.name);
+    if (e.isSymbolicLink()) return []; // links created by the integration run
     return e.isDirectory() ? walk(p) : [p];
   });
 }
@@ -56,7 +57,7 @@ function where(locs: { file: string }[]) {
 
 test('indexes methods with literal, constant, nested-constant and ValidatedMethod names', () => {
   const names = [...index.a.methods.keys()].sort();
-  assert.deepEqual(names, ['tasks.insert', 'tasks.serverOnly', 'tasks.toggle', 'users.profile.save', 'users.remove', 'users.reset', 'users.update']);
+  assert.deepEqual(names, ['shared.ping', 'tasks.insert', 'tasks.serverOnly', 'tasks.toggle', 'users.profile.save', 'users.remove', 'users.reset', 'users.update']);
   assert.equal(index.a.methods.get('tasks.serverOnly')![0].env, 'server');
   assert.equal(index.a.methods.get('tasks.insert')![0].kind, 'validated');
   const update = index.a.methods.get('users.update')![0];
@@ -67,8 +68,8 @@ test('indexes methods with literal, constant, nested-constant and ValidatedMetho
 });
 
 test('indexes publications (string, object form, constant key) and skips null publications', () => {
-  assert.deepEqual([...index.a.publications.keys()].sort(), ['users.list', 'users.one']);
-  assert.deepEqual([...index.a.subscriptions.keys()].sort(), ['users.list', 'users.unknownPub']);
+  assert.deepEqual([...index.a.publications.keys()].sort(), ['shared.items', 'users.list', 'users.one']);
+  assert.deepEqual([...index.a.subscriptions.keys()].sort(), ['shared.items', 'users.list', 'users.unknownPub']);
 });
 
 test('Ctrl+click on a Meteor.callAsync string goes to the method definition', () => {
