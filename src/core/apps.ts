@@ -63,7 +63,7 @@ export class AppLayout {
 
   constructor(
     readonly apps: AppRoot[],
-    packages: PackageRoot[],
+    readonly packages: PackageRoot[],
   ) {
     // deepest folders first, so that a nested package wins over the one containing it
     this.packageDirs = [...packages].sort((x, y) => y.dir.length - x.dir.length);

@@ -1,5 +1,6 @@
 **
 !dist/extension.js
+!dist/worker.js
 !resources/meteor.svg
 !resources/icon.png
 !package.json

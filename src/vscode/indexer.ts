@@ -3,13 +3,14 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePackageJs } from '../core/apps';
 import { MeteorIndex } from '../core/index';
-import { parseHtml } from '../core/htmlParser';
-import { JsParseOptions, parseJs } from '../core/jsParser';
-import { FileFacts } from '../core/model';
+import { JsParseOptions } from '../core/jsParser';
+import { MAX_SIZE, ParsedFile, parseFile } from '../core/parseFile';
 import { globToRegExp } from '../core/text';
+import { ParsePool } from './parsePool';
 
 const SUPPORTED = /\.(js|jsx|mjs|cjs|ts|tsx|mts|cts|html)$/i;
-const MAX_SIZE = 1_500_000;
+/** Build output and dependencies: never app or package definitions. */
+const LAYOUT_SKIP = /[\\/](node_modules|\.meteor[\\/]local|\.npm)[\\/]/;
 /** Never walked in package folders outside the workspace. */
 const WALK_SKIP = new Set(['node_modules', '.git', '.npm', '.meteor']);
 
@@ -30,12 +31,20 @@ export class WorkspaceIndexer implements vscode.Disposable {
   /** real path → every path it was seen by (the same file reached through several symlinked folders) */
   private readonly aliases = new Map<string, Set<string>>();
   private layout = new AppLayout([], []);
+  /** During the initial scan, changes are announced once at the end. */
+  private scanning = false;
+  private readonly pool: ParsePool;
 
   /** Fired (debounced) whenever the index content changes. */
   readonly onDidChange = this.changeEmitter.event;
   ready: Promise<void> = Promise.resolve();
 
-  constructor(readonly index: MeteorIndex) {
+  constructor(
+    readonly index: MeteorIndex,
+    private readonly log: vscode.LogOutputChannel,
+    workerScript: string,
+  ) {
+    this.pool = new ParsePool(workerScript);
     this.disposables.push(
       this.changeEmitter,
       vscode.workspace.onDidChangeTextDocument((e) => this.scheduleDocument(e.document)),
@@ -55,13 +64,19 @@ export class WorkspaceIndexer implements vscode.Disposable {
 
   rescan(): Promise<void> {
     this.ready = Promise.resolve(
-      vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Meteor Power: indexing…' }, () => this.fullScan()),
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Meteor Power: indexing' }, (p) =>
+        this.fullScan(p).catch((e) => {
+          this.scanning = false;
+          this.log.error('Indexing failed', e);
+        }),
+      ),
     );
     return this.ready;
   }
 
-  private async fullScan() {
+  private async fullScan(progress: vscode.Progress<{ message?: string }>) {
     const id = ++this.scanId;
+    const t0 = Date.now();
     const cfg = vscode.workspace.getConfiguration('meteorPower');
     const include = cfg.get<string>('include') || '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}';
     const exclude = cfg.get<string[]>('exclude') ?? [];
@@ -85,7 +100,10 @@ export class WorkspaceIndexer implements vscode.Disposable {
     }
     // app and package definitions: only the app of each file changes, nothing to parse again
     const layoutWatcher = vscode.workspace.createFileSystemWatcher('**/{.meteor/release,.meteor/packages,package.js}');
-    for (const ev of [layoutWatcher.onDidCreate, layoutWatcher.onDidChange, layoutWatcher.onDidDelete]) ev(() => this.scheduleLayout());
+    for (const ev of [layoutWatcher.onDidCreate, layoutWatcher.onDidChange, layoutWatcher.onDidDelete]) {
+      // npm packages also have package.js files, and a running Meteor rewrites .meteor/local all the time
+      ev((u) => LAYOUT_SKIP.test(u.fsPath) || this.scheduleLayout());
+    }
     this.watchers.push(layoutWatcher);
 
     const excludeGlob = exclude.length ? `{${exclude.join(',')}}` : undefined;
@@ -108,15 +126,79 @@ export class WorkspaceIndexer implements vscode.Disposable {
       const key = this.track(u.fsPath);
       if (!unique.has(key)) unique.set(key, u);
     }
-    const uris = [...unique.values()];
-    const BATCH = 64;
-    for (let i = 0; i < uris.length; i += BATCH) {
-      await Promise.all(uris.slice(i, i + BATCH).map((u) => this.indexFile(u, false)));
-      if (id !== this.scanId) return;
-    }
+    const files = [...unique].map(([key, u]) => ({ key, path: u.fsPath }));
+    const t1 = Date.now();
+    this.log.info(
+      `Found ${files.length} files in ${t1 - t0} ms` +
+        (outside.length ? ` (${outside.length} in package folders outside the workspace)` : '') +
+        `; ${layout.apps.length} Meteor app(s), ${layout.packages.length} local package(s)`,
+    );
+
+    this.scanning = true;
+    const parsed: ParsedFile[] = [];
+    let lastReport = 0;
+    const { workers } = await this.pool.parseAll(
+      files,
+      this.options,
+      (results) => {
+        if (id !== this.scanId) return;
+        for (const r of results) {
+          parsed.push(r);
+          if (r.facts) this.index.update(r.facts);
+        }
+        if (Date.now() - lastReport > 300) {
+          lastReport = Date.now();
+          progress.report({ message: `${Math.round((100 * parsed.length) / files.length)}% (${parsed.length}/${files.length})` });
+        }
+      },
+      () => id !== this.scanId,
+    );
+    if (id !== this.scanId) return;
+    const t2 = Date.now();
     // open editors may contain unsaved changes
     for (const d of vscode.workspace.textDocuments) this.syncDocument(d);
-    this.fireChange(true);
+    void this.index.a;
+    const t3 = Date.now();
+    this.scanning = false;
+    this.changeEmitter.fire();
+    const t4 = Date.now();
+    this.logScan(parsed, workers, { parse: t2 - t1, aggregate: t3 - t2, views: t4 - t3, total: t4 - t0 });
+  }
+
+  /** What the scan did and where the time went, to spot folders worth excluding. */
+  private logScan(parsed: ParsedFile[], workers: number, ms: { parse: number; aggregate: number; views: number; total: number }) {
+    const rel = (f: string) => vscode.workspace.asRelativePath(f, false);
+    const bytes = parsed.reduce((s, r) => s + r.size, 0);
+    const sum = (k: 'readMs' | 'parseMs') => (parsed.reduce((s, r) => s + r[k], 0) / 1000).toFixed(1);
+    const skipped = parsed.filter((r) => r.skipped);
+    this.log.info(
+      `Parsed ${parsed.length} files (${(bytes / 1e6).toFixed(1)} MB) in ${ms.parse} ms on ${workers ? `${workers} worker threads` : 'the extension host'}; ` +
+        `aggregation ${ms.aggregate} ms, diagnostics and views ${ms.views} ms; total ${ms.total} ms ` +
+        `(summed over the threads: reading ${sum('readMs')} s, parsing ${sum('parseMs')} s)`,
+    );
+    if (skipped.length) {
+      this.log.info(`Skipped ${skipped.length} minified or too large files, e.g.:`);
+      for (const r of skipped.slice(0, 10)) this.log.info(`  ${rel(r.key)} (${r.skipped}, ${(r.size / 1000).toFixed(0)} KB)`);
+    }
+    const slowest = [...parsed].sort((x, y) => y.parseMs - x.parseMs).slice(0, 10).filter((r) => r.parseMs >= 50);
+    if (slowest.length) {
+      this.log.info('Slowest files:');
+      for (const r of slowest) this.log.info(`  ${r.parseMs.toFixed(0)} ms  ${rel(r.key)} (${(r.size / 1000).toFixed(0)} KB)`);
+    }
+    // folders two levels deep, by parsing time
+    const folders = new Map<string, { files: number; bytes: number; ms: number }>();
+    for (const r of parsed) {
+      const parts = rel(r.key).split(/[\\/]/);
+      const dir = parts.length > 2 ? parts.slice(0, 2).join('/') : parts.length > 1 ? parts[0] : '.';
+      const f = folders.get(dir) ?? { files: 0, bytes: 0, ms: 0 };
+      f.files++;
+      f.bytes += r.size;
+      f.ms += r.parseMs;
+      folders.set(dir, f);
+    }
+    const top = [...folders].sort((x, y) => y[1].ms - x[1].ms).slice(0, 10);
+    this.log.info('Heaviest folders (add them to meteorPower.exclude if they are not Meteor code):');
+    for (const [dir, f] of top) this.log.info(`  ${dir}: ${f.files} files, ${(f.bytes / 1e6).toFixed(1)} MB, ${f.ms.toFixed(0)} ms`);
   }
 
   // ------------------------------------------------------------------------------------- apps
@@ -142,7 +224,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
   /** Meteor apps (folders with `.meteor/release`) and local packages (folders with `package.js`). */
   private async detectLayout(packageDirs: string[]): Promise<AppLayout> {
     const [releases, packageFiles] = await Promise.all([
-      vscode.workspace.findFiles('**/.meteor/release', '**/node_modules/**'),
+      vscode.workspace.findFiles('**/.meteor/release', '{**/node_modules/**,**/.meteor/local/**}'),
       vscode.workspace.findFiles('**/package.js', '{**/node_modules/**,**/.meteor/**,**/.npm/**}'),
     ]);
     for (const dir of packageDirs) {
@@ -185,9 +267,11 @@ export class WorkspaceIndexer implements vscode.Disposable {
   private scheduleLayout() {
     clearTimeout(this.layoutTimer);
     this.layoutTimer = setTimeout(async () => {
+      const t0 = Date.now();
       const cfg = vscode.workspace.getConfiguration('meteorPower');
       const layout = await this.detectLayout(this.packageDirs(cfg.get<string[]>('packageDirs', [])));
       this.setLayout(layout);
+      this.log.info(`Apps and packages changed: ${layout.apps.length} app(s), ${layout.packages.length} local package(s) (${Date.now() - t0} ms)`);
       this.fireChange();
     }, 500);
   }
@@ -269,12 +353,14 @@ export class WorkspaceIndexer implements vscode.Disposable {
       clearTimeout(t);
       this.pending.delete(file);
     }
-    const facts = parse(this.track(file), doc.getText(), this.options);
+    const key = this.track(file);
+    const { facts, skipped } = parseFile(key, doc.getText(), this.options);
     this.versions.set(file, doc.version);
-    if (facts) {
-      this.index.update(facts);
-      this.fireChange();
-    }
+    if (facts) this.index.update(facts);
+    else if (skipped) this.index.remove(key);
+    // a syntax error while typing: keep the previous facts
+    else return;
+    this.fireChange();
   }
 
   private scheduleDocument(doc: vscode.TextDocument) {
@@ -291,6 +377,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
   }
 
   private onDiskChange(uri: vscode.Uri) {
+    // e.g. a running Meteor rewriting .meteor/local: nothing to remember
+    if (!this.accepts(uri)) return;
     const key = this.track(uri.fsPath);
     const open = vscode.workspace.textDocuments.find((d) => this.keyOf(d.uri.fsPath) === key);
     if (open) {
@@ -301,6 +389,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
   }
 
   private onDiskDelete(uri: vscode.Uri) {
+    if (!this.accepts(uri)) return;
     const key = this.keyOf(uri.fsPath);
     this.realPaths.delete(uri.fsPath);
     const set = this.aliases.get(key);
@@ -315,16 +404,20 @@ export class WorkspaceIndexer implements vscode.Disposable {
     this.fireChange();
   }
 
-  private async indexFile(uri: vscode.Uri, notify = true) {
+  private async indexFile(uri: vscode.Uri) {
     if (!this.accepts(uri)) return;
     const key = this.track(uri.fsPath);
     try {
       const stat = await vscode.workspace.fs.stat(uri);
-      if (stat.size > MAX_SIZE) return;
+      if (stat.size > MAX_SIZE) {
+        this.index.remove(key);
+        return;
+      }
       const bytes = await vscode.workspace.fs.readFile(uri);
-      const facts = parse(key, Buffer.from(bytes).toString('utf8'), this.options);
+      const { facts, skipped } = parseFile(key, Buffer.from(bytes).toString('utf8'), this.options);
       if (facts) this.index.update(facts);
-      if (notify) this.fireChange();
+      else if (skipped) this.index.remove(key);
+      this.fireChange();
     } catch {
       this.index.remove(key);
     }
@@ -336,10 +429,10 @@ export class WorkspaceIndexer implements vscode.Disposable {
     return !this.excludes.some((re) => re.test(p));
   }
 
-  private fireChange(immediate = false) {
+  private fireChange() {
+    if (this.scanning) return;
     clearTimeout(this.changeTimer);
-    if (immediate) this.changeEmitter.fire();
-    else this.changeTimer = setTimeout(() => this.changeEmitter.fire(), 250);
+    this.changeTimer = setTimeout(() => this.changeEmitter.fire(), 250);
   }
 
   dispose() {
@@ -349,10 +442,6 @@ export class WorkspaceIndexer implements vscode.Disposable {
     clearTimeout(this.layoutTimer);
     vscode.Disposable.from(...this.disposables).dispose();
   }
-}
-
-function parse(file: string, text: string, options: JsParseOptions): FileFacts | null {
-  return file.toLowerCase().endsWith('.html') ? parseHtml(file, text) : parseJs(file, text, options);
 }
 
 async function readText(file: string): Promise<string | undefined> {

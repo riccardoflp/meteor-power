@@ -453,6 +453,7 @@ export class MeteorDiagnostics implements vscode.Disposable {
       ignoreTemplates: cfg.get<string[]>('diagnostics.ignoreTemplates', []),
     };
     const index = this.indexer.index;
+    const entries: [vscode.Uri, vscode.Diagnostic[]][] = [];
     for (const f of index.allFacts()) {
       if (!f.calls.length && !f.subscriptions.length && !f.htmlUsages.length) continue;
       const list = problems(index, f.file, opts).map((p) => {
@@ -461,8 +462,10 @@ export class MeteorDiagnostics implements vscode.Disposable {
         d.code = p.code;
         return d;
       });
-      if (list.length) this.collection.set(vscode.Uri.file(f.file), list);
+      if (list.length) entries.push([vscode.Uri.file(f.file), list]);
     }
+    // one update for every file: much faster than one per file in large workspaces
+    this.collection.set(entries);
   }
 
   dispose() {

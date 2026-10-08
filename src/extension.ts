@@ -17,8 +17,9 @@ export interface MeteorPowerApi {
 
 export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
   const index = new MeteorIndex();
-  const indexer = new WorkspaceIndexer(index);
-  ctx.subscriptions.push(indexer);
+  const log = vscode.window.createOutputChannel('Meteor Power', { log: true });
+  const indexer = new WorkspaceIndexer(index, log, ctx.asAbsolutePath('dist/worker.js'));
+  ctx.subscriptions.push(log, indexer, vscode.commands.registerCommand('meteorPower.showLog', () => log.show()));
 
   registerProviders(ctx, indexer);
 

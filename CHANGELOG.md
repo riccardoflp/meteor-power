@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings for your own wrapper functions that define or call methods and publications (`meteorPower.methods.defineFunctions`, `callFunctions`, `meteorPower.publications.defineFunctions`, `subscribeFunctions`)
 - Constant names are also resolved through `import { X as Y }`, default imports (`import NAMES from './names'`) and destructuring (`const { RESET } = USERS_METHODS`)
 - `public/` is excluded from indexing by default (static files, not Blaze)
+- Files are parsed on worker threads, using several cores without blocking the extension host; minified bundles are skipped
+- **Meteor Power: Show Log** shows how long indexing took, the slowest files and the heaviest folders
 - **Rename (F2)** of methods, publications, templates and helpers across JS and HTML; names coming from constants are renamed in the constant
 - **Several Meteor apps in one workspace**: every folder with `.meteor/release` is an app, and definitions, references, completion, diagnostics, CodeLens and rename are resolved inside the app(s) of the current file
   - shared code symlinked into several apps belongs to all of them; diagnostics report names missing in some of those apps

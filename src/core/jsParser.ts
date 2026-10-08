@@ -6,8 +6,10 @@ import { envFromPath, LineMap, makeSnippet, stripBom } from './text';
 // Babel AST nodes; typed loosely on purpose, we only read a handful of fields.
 type Node = any;
 
-// `.call(` / `.callAsync(`: a file may only call ValidatedMethod objects imported from elsewhere
-const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout|\.(?:call(?:Async|Promise)?|_execute)\s*\(/;
+const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout/;
+/** `x.call(`, `Tasks.x.callAsync(`: the root (`x`, `Tasks`) is in group 1. */
+const OBJECT_CALL_CHECK = /([\w$]+)[\w$.]*\.(?:call(?:Async|Promise)?|_execute)\s*\(/g;
+const IMPORT_CLAUSE = /\bimport\s+([\w$\s{},*]+?)\s+from\s*['"]/g;
 /** Files that may only export name constants (e.g. `export const METHODS = { UPDATE: 'users.update' }`). */
 const CONSTANTS_CHECK = /\bexport\s+(?:const|let|var|enum|default)\b/;
 const CALL_FNS = new Set(['call', 'callAsync', 'apply', 'applyAsync']);
@@ -73,7 +75,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
   };
   const customNames = [...custom.methodDefiners, ...custom.methodCallers, ...custom.publicationDefiners, ...custom.subscribeCallers];
   const mentionsCustom = customNames.some((n) => text.includes(n.split('.').pop()!));
-  if (!QUICK_CHECK.test(text) && !CONSTANTS_CHECK.test(text) && !mentionsCustom) return facts;
+  if (!QUICK_CHECK.test(text) && !CONSTANTS_CHECK.test(text) && !mentionsCustom && !callsImportedObject(text)) return facts;
 
   const ast = tryParse(file, text);
   if (!ast) return null;
@@ -666,6 +668,19 @@ function moduleHint(file: string, spec: string): string | undefined {
 /** Same normalization for the exporting file. */
 export function moduleId(file: string): string {
   return file.replace(/\\/g, '/').replace(JS_EXT, '').toLowerCase();
+}
+
+/**
+ * Whether a file may call a ValidatedMethod object imported from elsewhere (`insertTask.call(...)`):
+ * a `.call(` on an imported name. Plain `fn.call(this)` is everywhere in libraries, those files are skipped.
+ */
+function callsImportedObject(text: string): boolean {
+  if (!text.includes('import')) return false;
+  const imported = new Set<string>();
+  for (const m of text.matchAll(IMPORT_CLAUSE)) for (const n of m[1].match(/[\w$]+/g) ?? []) imported.add(n);
+  if (!imported.size) return false;
+  for (const m of text.matchAll(OBJECT_CALL_CHECK)) if (imported.has(m[1])) return true;
+  return false;
 }
 
 function tryParse(file: string, text: string): Node | undefined {

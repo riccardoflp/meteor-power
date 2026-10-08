@@ -133,6 +133,14 @@ Quick commands (Ctrl+Shift+P): *Meteor Power: Go to Method… / Go to Publicatio
 - `meteorPower.diagnostics.ignoreMethods` / `ignorePublications` / `ignoreTemplates`: names provided by packages that should not be reported. They support `*`, e.g. `"accounts.*"`.
 - `meteorPower.codeLens.enabled`: show or hide the CodeLens.
 
+## Large workspaces
+
+Files are parsed on several worker threads: a workspace with 26,000 files is indexed in about 5 seconds.
+Minified bundles and files over 1.5 MB are skipped.
+
+If indexing is slow, run **Meteor Power: Show Log**: it lists how long each phase took, the slowest files and the
+heaviest folders. Folders that are not Meteor code (generated files, vendored libraries) can be added to `meteorPower.exclude`.
+
 ## Development
 
 ```bash
@@ -141,6 +149,7 @@ npm test                  # unit tests on the core (parsers + index)
 npm run test:integration  # tests inside VS Code (uses the installed VS Code)
 npm run package           # builds meteor-power-<version>.vsix
 npm run screenshots       # retakes the README screenshots from docs/demo (Windows)
+node out/test/perf/run.js # indexing time on a large generated workspace (after npm run test:integration)
 ```
 
 To debug it, open this folder in VS Code and press **F5**.

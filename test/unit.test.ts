@@ -9,6 +9,7 @@ import { definitions, enclosingTemplate, hasConflict, helperOwner, problems, ref
 import { Loc, Pos } from '../src/core/model';
 import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
 import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
+import { isMinified, parseFile } from '../src/core/parseFile';
 import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePackageJs } from '../src/core/apps';
 
 const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
@@ -562,4 +563,18 @@ test('rename a ValidatedMethod: the name string changes, the calls through the o
   const { edits, after } = doRename('client/tasksUsage.js', 'addTask.call', 1, 'tasks.add');
   assert.deepEqual(where(edits.map((e) => e.loc)), ['imports/api/tasks/tasks.js']);
   assert.equal(after.a.calls.get('tasks.add')!.filter((c) => c.loc.file === F('client/tasksUsage.js')).length, 4);
+});
+
+test('indexing skips minified bundles and library files that only use fn.call()', () => {
+  const minified = `!function(){${'var a=Meteor.call("x");'.repeat(2000)}}();`;
+  assert.equal(isMinified(minified), true);
+  assert.equal(parseFile('vendor.js', minified, {}).skipped, 'minified');
+  const source = Array.from({ length: 2000 }, (_, i) => `Meteor.call('m${i}');`).join('\n');
+  assert.equal(isMinified(source), false);
+  assert.equal(parseFile('app.js', source, {}).facts!.calls.length, 2000);
+  // `.call(` on a name that is not imported: nothing to look at
+  const lib = `function f() { return g.call(this, 1); }`;
+  assert.equal(parseJs('lib.js', lib)!.calls.length, 0);
+  const viaImport = `import { insertTask } from './tasks';\ninsertTask.call({});`;
+  assert.equal(parseJs('a.js', viaImport)!.calls.length, 1);
 });

@@ -16,7 +16,11 @@ const common = {
   logLevel: 'info',
 };
 
-const builds = [{ ...common, entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js' }];
+const builds = [
+  { ...common, entryPoints: ['src/extension.ts'], outfile: 'dist/extension.js' },
+  // parses files on worker threads (src/vscode/parsePool.ts)
+  { ...common, entryPoints: ['src/worker.ts'], outfile: 'dist/worker.js' },
+];
 
 if (tests) {
   builds.push(
@@ -26,6 +30,8 @@ if (tests) {
     { ...common, entryPoints: ['test/integration/multi.ts'], outfile: 'out/test/integration/multi.js' },
     { ...common, entryPoints: ['test/screenshots/run.ts'], outfile: 'out/test/screenshots/run.js', external: ['vscode', '@vscode/test-electron'] },
     { ...common, entryPoints: ['test/screenshots/shoot.ts'], outfile: 'out/test/screenshots/shoot.js' },
+    { ...common, entryPoints: ['test/perf/run.ts'], outfile: 'out/test/perf/run.js', external: ['vscode', '@vscode/test-electron'] },
+    { ...common, entryPoints: ['test/perf/suite.ts'], outfile: 'out/test/perf/suite.js' },
   );
 }
 

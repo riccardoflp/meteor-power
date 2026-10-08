@@ -83,6 +83,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "meteorPower.showLog",
+        "title": "Show Log",
+        "category": "Meteor Power",
+        "icon": "$(output)"
+      },
+      {
         "command": "meteorPower.goToMethod",
         "title": "Go to Method…",
         "category": "Meteor Power",
