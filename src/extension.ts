@@ -16,6 +16,8 @@ export interface MeteorPowerApi {
 }
 
 export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
+  // the Explorer context menu entries (exclude / include a folder)
+  void vscode.commands.executeCommand('setContext', 'meteorPower.active', true);
   const index = new MeteorIndex();
   const log = vscode.window.createOutputChannel('Meteor Power', { log: true });
   const indexer = new WorkspaceIndexer(index, log, ctx.asAbsolutePath('dist/worker.js'));

@@ -45,6 +45,10 @@ export function targetAt(index: MeteorIndex, file: string, pos: Pos): Target | u
     const name = a.resolve(d);
     return name !== undefined ? { type: 'publication', name, loc: d.loc, isDef: true } : undefined;
   }
+  // `export const sampleMethods = { 'sample.run'() {} }` registered by another file
+  for (const d of a.registeredDefs.get(file) ?? []) {
+    if (hit(d.loc)) return { type: d.kind === 'publication' ? 'publication' : 'method', name: d.name, loc: d.loc, isDef: true };
+  }
   for (const p of f.templateParts) {
     if (!hit(p.fullLoc)) continue;
     for (const m of p.members) {
@@ -321,6 +325,8 @@ export function problems(index: MeteorIndex, file: string, opts: DiagnosticOptio
     check('Meteor method', name, (a.methods.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-method');
   }
   for (const c of f.subscriptions) {
+    // `eventBus.subscribe('x')` may not be a DDP subscription
+    if (c.uncertain) continue;
     const name = a.resolve(c);
     if (name === undefined || ignored(opts.ignorePublications, name)) continue;
     check('Publication', name, (a.publications.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-publication');

@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { Scope } from '../core/index';
 import { Loc } from '../core/model';
+import { togglePath } from '../core/pathFilter';
 import { enclosingTemplate, templateHtmlDefs, templateJsDefs, templatesInFile } from '../core/queries';
 import { appsLabel, openLoc, relPath, toPos } from './convert';
 import { WorkspaceIndexer } from './indexer';
@@ -170,5 +171,52 @@ export function registerCommands(ctx: vscode.ExtensionContext, indexer: Workspac
       }
       return isHtml ? openTemplateJs(name, scope) : openTemplateHtml(name, scope);
     }),
+
+    // Explorer context menu: `uri` is the clicked item, `uris` the whole selection
+    vscode.commands.registerCommand('meteorPower.excludePath', (uri?: vscode.Uri, uris?: vscode.Uri[]) => togglePaths(indexer, true, uri, uris)),
+    vscode.commands.registerCommand('meteorPower.includePath', (uri?: vscode.Uri, uris?: vscode.Uri[]) => togglePaths(indexer, false, uri, uris)),
   );
+}
+
+/** Adds the files and folders to `meteorPower.exclude` (workspace settings), or includes them again. */
+async function togglePaths(indexer: WorkspaceIndexer, exclude: boolean, uri?: vscode.Uri, uris?: vscode.Uri[]) {
+  const active = vscode.window.activeTextEditor?.document.uri;
+  const targets = uris?.length ? uris : uri ? [uri] : active ? [active] : [];
+  const cfg = vscode.workspace.getConfiguration('meteorPower');
+  let patterns = cfg.get<string[]>('exclude', []);
+  const done: string[] = [];
+  const notes: string[] = [];
+  for (const u of targets) {
+    const folder = u.scheme === 'file' ? vscode.workspace.getWorkspaceFolder(u) : undefined;
+    const rel = folder && path.relative(folder.uri.fsPath, u.fsPath).replace(/\\/g, '/');
+    if (!rel) {
+      notes.push(`${path.basename(u.fsPath)}: only files and folders inside a workspace folder can be ${exclude ? 'excluded' : 'included'}.`);
+      continue;
+    }
+    let isDir = false;
+    try {
+      isDir = ((await vscode.workspace.fs.stat(u)).type & vscode.FileType.Directory) !== 0;
+    } catch {
+      // deleted meanwhile: handled as a file
+    }
+    const before = indexer.pathStatus(u, isDir);
+    if (before.always) {
+      notes.push(`${rel}: node_modules, .git and .meteor/local are never indexed.`);
+      continue;
+    }
+    const next = togglePath(patterns, u.fsPath.replace(/\\/g, '/'), rel, isDir, exclude, indexer.pathFilter);
+    if (!next) {
+      notes.push(exclude ? `${rel} is already excluded${before.by ? ` by \`${before.by}\`` : ''}.` : `${rel} is already indexed.`);
+      continue;
+    }
+    patterns = next;
+    done.push(!exclude && before.by ? `${rel} (was excluded by \`${before.by}\`)` : rel);
+  }
+  if (done.length) await cfg.update('exclude', patterns, vscode.ConfigurationTarget.Workspace);
+  const message = [done.length ? `${exclude ? 'Excluded' : 'Included'} ${done.join(', ')}; reindexing.` : '', ...notes].filter(Boolean).join(' ');
+  if (!message) return;
+  // not awaited: the command ends when the setting is written
+  void vscode.window.showInformationMessage(`Meteor Power: ${message}`, 'Show Setting').then((choice) => {
+    if (choice) void vscode.commands.executeCommand('workbench.action.openWorkspaceSettings', { query: 'meteorPower.exclude' });
+  });
 }

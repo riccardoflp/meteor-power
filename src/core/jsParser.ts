@@ -1,12 +1,12 @@
 import * as path from 'path';
 import { parse, ParserPlugin } from '@babel/parser';
-import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, NameKind, TemplateLinkKind, TemplatePartKind } from './model';
+import { CallSite, emptyFacts, Env, FileFacts, Loc, Member, MethodDef, NameKind, own, TemplateLinkKind, TemplatePartKind } from './model';
 import { envFromPath, LineMap, makeSnippet, stripBom } from './text';
 
 // Babel AST nodes; typed loosely on purpose, we only read a handful of fields.
 type Node = any;
 
-const QUICK_CHECK = /Meteor|Template|subscribe|ValidatedMethod|BlazeLayout/;
+const QUICK_CHECK = /Meteor|meteor\/|Template|[sS]ubscribe|publish|ValidatedMethod|BlazeLayout/;
 /** `x.call(`, `Tasks.x.callAsync(`: the root (`x`, `Tasks`) is in group 1. */
 const OBJECT_CALL_CHECK = /([\w$]+)[\w$.]*\.(?:call(?:Async|Promise)?|_execute)\s*\(/g;
 const IMPORT_CLAUSE = /\bimport\s+([\w$\s{},*]+?)\s+from\s*['"]/g;
@@ -16,6 +16,12 @@ const CALL_FNS = new Set(['call', 'callAsync', 'apply', 'applyAsync']);
 /** Methods of a ValidatedMethod object that call it: `insertTask.call(...)`, `insertTask.callAsync(...)`. */
 const OBJECT_CALL_FNS = new Set(['call', 'callAsync', 'callPromise', '_execute']);
 const TEMPLATE_PART_KINDS = new Set<string>(['helpers', 'events', 'onCreated', 'onRendered', 'onDestroyed']);
+/** Template callbacks called with the template instance as `this`. */
+const LIFECYCLE_KINDS = new Set<string>(['onCreated', 'onRendered', 'onDestroyed']);
+/** Subscription caches whose `.subscribe(name)` subscribes like Meteor.subscribe (meteorhacks:subs-manager, ccorcos:subs-cache). */
+const SUBSCRIPTION_MANAGERS = new Set(['SubsManager', 'SubsCache']);
+/** Packages exporting a subscribe function: `useSubscribe('name')`. */
+const SUBSCRIBE_EXPORTS: Record<string, string> = { 'meteor/react-meteor-data': 'useSubscribe' };
 /** aldeed:template-extension */
 const TEMPLATE_LINK_KINDS = new Set<string>(['inheritsHelpersFrom', 'inheritsEventsFrom', 'inheritsHooksFrom', 'replaces', 'copyAs']);
 /** Properties of the global `Template` that are not template names. */
@@ -92,10 +98,24 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
   const aliases = new Map<string, string>();
   /** Every local name bound by an import. */
   const imported = new Set<string>();
+  /** Names of the Meteor object: `Meteor` unless the file declares or imports another `Meteor`, plus `import { Meteor as M }`. */
+  const meteorNames = new Set(['Meteor']);
+  /** Subscribe functions imported from their package (`useSubscribe` from meteor/react-meteor-data). */
+  const subscribeFns = new Set<string>();
+  /** Template lifecycle callbacks: inside them `this` is the template instance. */
+  const lifecycleFns = new Set<Node>();
+  /** Variables whose `.subscribe(name)` is a DDP subscription: template instances and subscription managers. */
+  const subscribers = new Set<string>();
+  /** For each enclosing non-arrow function, whether its `this` is a template instance. */
+  const thisStack: boolean[] = [];
+  /** Object literals assigned to a variable anywhere in the file (registrations built inside a function). */
+  const localObjects = new Map<string, Node>();
 
   collectTopLevel(ast.program);
   collectAliases(ast.program);
+  collectBindings(ast.program);
   collectMethodObjects(ast.program);
+  collectObjectMaps(ast.program);
   walk(ast.program, undefined);
   return facts;
 
@@ -155,7 +175,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     // `const X = {...}; export default X;`
     if (node.type === 'Identifier') {
       const prefix = node.name;
-      if (facts.constants[prefix] !== undefined) {
+      if (own(facts.constants, prefix) !== undefined) {
         facts.defaultExport[''] = facts.constants[prefix];
         facts.defaultExportLocs[''] = facts.constantLocs[prefix];
       }
@@ -206,6 +226,79 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     });
   }
 
+  /** What identifiers stand for: the Meteor object, template instances, subscription managers, local objects. */
+  function collectBindings(program: Node) {
+    for (const stmt of program.body) {
+      if (stmt.type !== 'ImportDeclaration' || stmt.importKind === 'type') continue;
+      const spec: string = stmt.source.value;
+      for (const sp of stmt.specifiers ?? []) {
+        const local = sp.local?.name;
+        const name = sp.type === 'ImportSpecifier' ? (sp.imported?.type === 'Identifier' ? sp.imported.name : sp.imported?.value) : undefined;
+        if (spec === 'meteor/meteor' && name === 'Meteor') meteorNames.add(local);
+        else if (local === 'Meteor') meteorNames.delete('Meteor');
+        if (SUBSCRIBE_EXPORTS[spec] !== undefined && name === SUBSCRIBE_EXPORTS[spec]) subscribeFns.add(local);
+      }
+    }
+    const fnDecls = new Map<string, Node>();
+    const lifecycleRefs: string[] = [];
+    forEachNode(program, (n) => {
+      if ((n.type === 'FunctionDeclaration' || n.type === 'ClassDeclaration') && n.id?.name === 'Meteor') meteorNames.delete('Meteor');
+      if (n.type === 'FunctionDeclaration' && n.id) fnDecls.set(n.id.name, n);
+      if (n.type === 'VariableDeclarator' && n.id?.type === 'Identifier' && n.init) {
+        const name: string = n.id.name;
+        const init = unwrap(n.init);
+        if (name === 'Meteor') meteorNames.delete('Meteor');
+        if (init.type === 'FunctionExpression') fnDecls.set(name, init);
+        if (init.type === 'ObjectExpression' && !localObjects.has(name)) localObjects.set(name, init);
+        // new SubsManager(), Template.instance()
+        const ctor = init.type === 'NewExpression' && exprPath(init.callee);
+        if (ctor && SUBSCRIPTION_MANAGERS.has(ctor.slice(ctor.lastIndexOf('.') + 1))) subscribers.add(name);
+        if (isTemplateInstanceCall(init)) subscribers.add(name);
+      }
+      if (n.type !== 'CallExpression' || !isMember(n.callee)) return;
+      const tpl = templateNameOf(n.callee.object);
+      const prop = propName(n.callee);
+      if (!tpl || !prop) return;
+      const arg = n.arguments?.[0] && unwrap(n.arguments[0]);
+      if (LIFECYCLE_KINDS.has(prop)) {
+        if (arg?.type === 'FunctionExpression') lifecycleFns.add(arg);
+        else if (arg?.type === 'Identifier') lifecycleRefs.push(arg.name);
+      } else if (prop === 'events') {
+        // 'click .x'(event, instance) {}
+        for (const p of resolveObject(arg)?.properties ?? []) {
+          const fn = p.type === 'ObjectMethod' ? p : p.type === 'ObjectProperty' ? fnOf(p.value) : undefined;
+          const param = fn?.params?.[1];
+          if (param?.type === 'Identifier') subscribers.add(param.name);
+        }
+      }
+    });
+    for (const name of lifecycleRefs) {
+      const fn = fnDecls.get(name);
+      if (fn) lifecycleFns.add(fn);
+    }
+  }
+
+  function isMeteor(n: Node): boolean {
+    return n?.type === 'Identifier' && meteorNames.has(n.name);
+  }
+
+  /** `Template.instance()` */
+  function isTemplateInstanceCall(n: Node): boolean {
+    return n?.type === 'CallExpression' && isMember(n.callee) && isIdent(n.callee.object, 'Template') && propName(n.callee) === 'instance';
+  }
+
+  /**
+   * `x.subscribe(...)` is a DDP subscription when `x` is a template instance (`this` in a lifecycle callback,
+   * `Template.instance()`, the instance argument of an event handler), a subscription manager or `Meteor.connection`.
+   * Anything else (`eventBus.subscribe`, `redis.subscribe`, a DDP connection to another server) may not be.
+   */
+  function isSubscriber(obj: Node): boolean {
+    if (obj.type === 'ThisExpression') return thisStack[thisStack.length - 1] === true;
+    if (obj.type === 'Identifier') return subscribers.has(obj.name);
+    if (isTemplateInstanceCall(obj)) return true;
+    return isMember(obj) && isMeteor(obj.object) && propName(obj) === 'connection';
+  }
+
   /** `const X = new ValidatedMethod({ name })`, also through the project's method definers (`new Method({ name })`). */
   function collectMethodObjects(program: Node) {
     forEachNode(program, (n) => {
@@ -229,12 +322,90 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
    * the name when it is declared in this file, otherwise `@obj:<variable>` resolved against the workspace.
    */
   function methodObjectRef(path: string): { name?: string; nameExpr?: string } | undefined {
-    const local = facts.methodObjects[path];
+    const local = own(facts.methodObjects, path);
     if (local) return local.name !== undefined ? { name: local.name } : { nameExpr: local.nameExpr };
     if (!imported.has(path.split('.')[0])) return undefined;
     const expanded = expandAliases(path);
     if (!expanded || expanded.startsWith('@default(')) return undefined;
     return { nameExpr: `@obj:${expanded}` };
+  }
+
+  /** Top-level object literals with functions or spreads, which another file may register with `Meteor.methods`. */
+  function collectObjectMaps(program: Node) {
+    for (const stmt of program.body) {
+      if (stmt.type === 'ExportDefaultDeclaration') {
+        const d = unwrap(stmt.declaration);
+        const obj = d?.type === 'ObjectExpression' ? d : d?.type === 'Identifier' ? objects.get(d.name) : undefined;
+        if (obj) addObjectMap('@default', obj);
+        continue;
+      }
+      const decl = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
+      if (decl?.type === 'VariableDeclaration') {
+        for (const d of decl.declarations) if (d.id?.type === 'Identifier' && objects.has(d.id.name)) addObjectMap(d.id.name, objects.get(d.id.name));
+      }
+      // export { a as b }
+      if (stmt.type === 'ExportNamedDeclaration' && !stmt.source) {
+        for (const sp of stmt.specifiers ?? []) {
+          const local = sp.local?.name;
+          const exported = sp.exported?.type === 'Identifier' ? sp.exported.name : sp.exported?.value;
+          if (!local || !exported || local === exported || !objects.has(local)) continue;
+          if (exported === 'default') addObjectMap('@default', objects.get(local));
+          else addObjectMap(exported, objects.get(local));
+        }
+      }
+    }
+  }
+
+  function addObjectMap(name: string, obj: Node) {
+    const members: MethodDef[] = [];
+    const spreads: string[] = [];
+    for (const p of obj.properties) {
+      if (p.type === 'SpreadElement') {
+        const arg = unwrap(p.argument);
+        const ref = arg?.type === 'Identifier' && objects.has(arg.name) ? arg.name : arg && objectRef(arg);
+        if (ref) spreads.push(ref);
+        continue;
+      }
+      const fn = p.type === 'ObjectMethod' ? p : p.type === 'ObjectProperty' ? fnOf(p.value) : undefined;
+      const n = fn && keyName(p);
+      if (n) members.push(makeDef(n, 'method', fn, p, fileEnv ?? 'both', docOf(p)));
+    }
+    if (members.length || spreads.length) facts.objectMaps[name] = { members, spreads };
+  }
+
+  /**
+   * `Meteor.methods(x)`, `Meteor.publish(x)`: the definitions of an object literal, following spreads,
+   * `Object.assign`, local variables and imports (resolved later against the workspace).
+   */
+  function registerObject(arg: Node, kind: 'method' | 'publication', env: Env, depth = 0): void {
+    const n = arg && unwrap(arg);
+    if (!n || depth > 8) return;
+    if (n.type === 'ObjectExpression') {
+      for (const p of n.properties) {
+        if (p.type === 'SpreadElement') registerObject(p.argument, kind, env, depth + 1);
+        else addDefFromProperty(p, kind, env);
+      }
+      return;
+    }
+    // Object.assign({}, a, b)
+    if (n.type === 'CallExpression' && isMember(n.callee) && isIdent(n.callee.object, 'Object') && propName(n.callee) === 'assign') {
+      for (const a of n.arguments) if (a.type !== 'SpreadElement') registerObject(a, kind, env, depth + 1);
+      return;
+    }
+    const local = n.type === 'Identifier' ? objects.get(n.name) ?? localObjects.get(n.name) : undefined;
+    if (local) return registerObject(local, kind, env, depth + 1);
+    const ref = objectRef(n);
+    if (ref) facts.registrations.push({ kind, ref, env, loc: loc(n.start, n.end) });
+    else facts.dynamicRegistrations.push(loc(n.start, n.end));
+  }
+
+  /** An imported object: `sampleMethods`, `Api.methods` → `@obj:...`; a default import → `@default(...)`. */
+  function objectRef(n: Node): string | undefined {
+    const p = exprPath(n);
+    if (!p || !imported.has(p.split('.')[0])) return undefined;
+    const expanded = expandAliases(p);
+    if (!expanded) return undefined;
+    return expanded.startsWith('@default(') ? expanded : `@obj:${expanded}`;
   }
 
   /** Rewrites the leading alias of a path: `UM.RESET` → `USERS_METHODS.RESET`. */
@@ -282,7 +453,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
 
     switch (node.type) {
       case 'IfStatement': {
-        const e = envOfTest(node.test);
+        const e = envOfTest(node.test, isMeteor);
         if (e) {
           walk(node.test, env);
           walk(node.consequent, e);
@@ -306,39 +477,55 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       }
     }
 
+    // `this` changes in every non-arrow function: a template instance in lifecycle callbacks only
+    const ownThis = node.type === 'FunctionExpression' || node.type === 'FunctionDeclaration' || node.type === 'ObjectMethod' || node.type === 'ClassMethod' || node.type === 'ClassPrivateMethod';
+    if (ownThis) thisStack.push(lifecycleFns.has(node));
+    // const instance = this;
+    if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier' && node.init?.type === 'ThisExpression' && thisStack[thisStack.length - 1]) {
+      subscribers.add(node.id.name);
+    }
     for (const key in node) {
       if (SKIP_KEYS.has(key)) continue;
       const v = node[key];
       if (v && typeof v === 'object') walk(v, env);
     }
+    if (ownThis) thisStack.pop();
   }
 
   function visitCall(node: Node, env: Env) {
     const callee = node.callee;
     if (visitCustom(node, env)) return;
+    const args = node.arguments ?? [];
+    // useSubscribe('name') from meteor/react-meteor-data
+    if (callee?.type === 'Identifier' && subscribeFns.has(callee.name)) {
+      addCall(facts.subscriptions, args[0], callee.name, env);
+      return;
+    }
     if (!isMember(callee)) return;
     const prop = propName(callee);
     if (!prop) return;
     const obj = callee.object;
-    const args = node.arguments ?? [];
 
-    if (isIdent(obj, 'Meteor')) {
+    if (isMeteor(obj)) {
       if (prop === 'methods') {
-        const o = resolveObject(args[0]);
-        if (o) for (const p of o.properties) addDefFromProperty(p, 'method', env);
+        registerObject(args[0], 'method', env);
       } else if (CALL_FNS.has(prop)) {
         addCall(facts.calls, args[0], prop, env);
-      } else if (prop === 'publish') {
-        const o = args[0] && unwrap(args[0]);
-        if (o?.type === 'ObjectExpression') {
-          for (const p of o.properties) addDefFromProperty(p, 'publication', env);
-        } else {
-          const n = nameOf(args[0]);
-          if (n) facts.publications.push(makeDef(n, 'publication', fnOf(args[1]), node, env, undefined));
-        }
+      } else if (prop === 'publish' && args.length === 1) {
+        // Meteor.publish({ 'a.b'() {} }), also through a variable or an import
+        registerObject(args[0], 'publication', env);
+      } else if (prop === 'publish' || prop === 'publishComposite') {
+        // publishComposite: reywood:publish-composite
+        addPublication(node, args, env);
       } else if (prop === 'subscribe') {
         addCall(facts.subscriptions, args[0], prop, env);
       }
+      return;
+    }
+
+    // percolate:find-from-publication
+    if (isIdent(obj, 'FindFromPublication') && prop === 'publish') {
+      addPublication(node, args, env);
       return;
     }
 
@@ -352,9 +539,10 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       }
     }
 
-    // this.subscribe('x'), instance.subscribe('x'), Template.instance().subscribe('x')
+    // this.subscribe('x') in onCreated, instance.subscribe('x'), Template.instance().subscribe('x'), subsManager.subscribe('x');
+    // other receivers are kept for navigation but never reported: `eventBus.subscribe('x', handler)`
     if (prop === 'subscribe') {
-      addCall(facts.subscriptions, args[0], prop, env);
+      addCall(facts.subscriptions, args[0], prop, env, !isSubscriber(obj));
       return;
     }
 
@@ -441,7 +629,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
         const n = nameOf(nameProp.value);
         if (n) target.push(makeDef(n, kind, fnInObject(obj), node, env, undefined));
       } else {
-        for (const p of obj.properties) addDefFromProperty(p, kind, env);
+        registerObject(obj, kind, env);
       }
       return;
     }
@@ -531,10 +719,18 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     };
   }
 
-  function addCall(target: CallSite[], arg: Node, fn: string, env: Env) {
+  function addCall(target: CallSite[], arg: Node, fn: string, env: Env, uncertain = false) {
     const n = nameOf(arg);
     if (!n) return;
-    target.push({ name: n.name, nameExpr: n.nameExpr, nameKind: n.kind, fn, loc: loc(n.start, n.end), env, lineText: lm.lineText(lm.pos(n.start).line) });
+    const call: CallSite = { name: n.name, nameExpr: n.nameExpr, nameKind: n.kind, fn, loc: loc(n.start, n.end), env, lineText: lm.lineText(lm.pos(n.start).line) };
+    if (uncertain) call.uncertain = true;
+    target.push(call);
+  }
+
+  /** `Meteor.publish('name', fn)` and the libraries with the same shape. */
+  function addPublication(node: Node, args: Node[], env: Env) {
+    const n = nameOf(args[0]);
+    if (n) facts.publications.push(makeDef(n, 'publication', fnOf(args[1]), node, env, undefined));
   }
 
   function addTemplateRef(name: string, nameKind: NameKind, start: number, end: number) {
@@ -562,7 +758,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
     const raw = exprPath(node);
     const p = raw && expandAliases(raw);
     if (p) {
-      const c = facts.constants[p];
+      const c = own(facts.constants, p);
       // `insertTask.name`
       if (c === undefined && raw.endsWith('.name')) {
         const ref = methodObjectRef(raw.slice(0, -'.name'.length));
@@ -777,12 +973,12 @@ function propName(member: Node): string | undefined {
   return undefined;
 }
 
-function envOfTest(test: Node): Env | undefined {
+function envOfTest(test: Node, isMeteor: (n: Node) => boolean): Env | undefined {
   if (test?.type === 'UnaryExpression' && test.operator === '!') {
-    const e = envOfTest(test.argument);
+    const e = envOfTest(test.argument, isMeteor);
     return e === 'server' ? 'client' : e === 'client' ? 'server' : undefined;
   }
-  if (isMember(test) && isIdent(test.object, 'Meteor')) {
+  if (isMember(test) && isMeteor(test.object)) {
     const p = propName(test);
     if (p === 'isServer') return 'server';
     if (p === 'isClient') return 'client';

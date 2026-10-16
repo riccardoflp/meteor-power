@@ -53,6 +53,33 @@ export interface CallSite extends NameSource {
   loc: Loc;
   env: Env;
   lineText: string;
+  /**
+   * The receiver may not be Meteor (`eventBus.subscribe('x')`, `this.subscribe` outside a template):
+   * kept for navigation, never reported as missing.
+   */
+  uncertain?: boolean;
+}
+
+/**
+ * An object literal whose functions may be registered in another file:
+ * `export const sampleMethods = { 'sample.run'() {} }`, then `Meteor.methods({ ...sampleMethods })`.
+ */
+export interface ObjectMap {
+  /** Function-valued properties, as definitions (their `kind` is set by the registration). */
+  members: MethodDef[];
+  /** `...other` inside the object: references resolved like registrations. */
+  spreads: string[];
+}
+
+/**
+ * `Meteor.methods(x)` / `Meteor.publish(x)` with an object defined in another module.
+ * `ref`: `@obj:<variable path>` or `@default(<module hint>)`, resolved against the workspace.
+ */
+export interface Registration {
+  kind: 'method' | 'publication';
+  ref: string;
+  env: Env;
+  loc: Loc;
 }
 
 export interface Member {
@@ -156,6 +183,11 @@ export interface FileFacts {
    * Calls like `insertTask.call(...)` in other files are resolved through them.
    */
   methodObjects: Record<string, NameSource>;
+  /** Object literals with functions, by variable name (`@default` for `export default`). */
+  objectMaps: Record<string, ObjectMap>;
+  registrations: Registration[];
+  /** `Meteor.methods(f())` and the like: registrations that cannot be followed statically (logged). */
+  dynamicRegistrations: Loc[];
   /** Where each constant / default export string is written (text inside the quotes), for renaming. */
   constantLocs: Record<string, Loc>;
   defaultExportLocs: Record<string, Loc>;
@@ -169,6 +201,14 @@ export interface FileFacts {
   htmlCloses: HtmlClose[];
 }
 
+/**
+ * `record[key]` for the records of FileFacts, ignoring Object.prototype: keys come from source identifiers
+ * (`hasOwnProperty.call(...)`, `toString`). They stay plain objects because worker threads clone them.
+ */
+export function own<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
 export function emptyFacts(file: string): FileFacts {
   return {
     file,
@@ -179,6 +219,9 @@ export function emptyFacts(file: string): FileFacts {
     constants: {},
     defaultExport: {},
     methodObjects: {},
+    objectMaps: {},
+    registrations: [],
+    dynamicRegistrations: [],
     constantLocs: {},
     defaultExportLocs: {},
     templateParts: [],

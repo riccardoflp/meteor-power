@@ -72,8 +72,11 @@ export function containsPos(range: Range, pos: Pos): boolean {
   return true;
 }
 
-/** Converts a glob like `**\/node_modules/**` or `*.{js,ts}` to a RegExp over `/`-separated paths. */
-export function globToRegExp(glob: string): RegExp {
+/**
+ * Converts a glob like `**\/node_modules/**` or `*.{js,ts}` to a RegExp over `/`-separated paths.
+ * `anchored`: the glob must match from the start of the path (a path relative to the workspace folder).
+ */
+export function globToRegExp(glob: string, anchored = false): RegExp {
   let re = '';
   let inGroup = false;
   for (let i = 0; i < glob.length; i++) {
@@ -99,7 +102,7 @@ export function globToRegExp(glob: string): RegExp {
     } else if (c === ',' && inGroup) re += '|';
     else re += c.replace(/[.+^$()|[\]\\]/g, '\\$&');
   }
-  return new RegExp('(?:^|/)' + re.replace(/^\(\?:\.\*\/\)\?/, '') + '$', 'i');
+  return new RegExp(anchored ? `^${re}$` : '(?:^|/)' + re.replace(/^\(\?:\.\*\/\)\?/, '') + '$', 'i');
 }
 
 /** Name matching with `*` wildcards, used by the ignore lists. */

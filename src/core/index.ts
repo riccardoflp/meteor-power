@@ -1,5 +1,5 @@
 import { moduleId } from './jsParser';
-import { CallSite, FileFacts, HtmlClose, HtmlMark, HtmlUsage, Loc, Member, MethodDef, NameSource, TemplateHtml, TemplateLink, TemplatePart, TemplateRef } from './model';
+import { CallSite, FileFacts, HtmlClose, HtmlMark, HtmlUsage, Loc, Member, MethodDef, NameSource, ObjectMap, own, TemplateHtml, TemplateLink, TemplatePart, TemplateRef } from './model';
 
 export type Named<T> = T & { name: string };
 export type TemplateMember = Member & { template: string };
@@ -55,6 +55,11 @@ export interface Aggregate {
   closes: MultiMap<HtmlClose>;
   /** All known template names (HTML or JS). */
   templateNames: Set<string>;
+  /**
+   * Methods and publications written in a file but registered from another one
+   * (`export const sampleMethods = {...}`, then `Meteor.methods(sampleMethods)`), by the file defining them.
+   */
+  registeredDefs: MultiMap<Named<MethodDef>>;
   /**
    * The name a definition or call refers to. Constants are looked up in the apps of `file`
    * (by default the file of `ns.loc`), so two apps may give the same constant different values.
@@ -215,20 +220,27 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
   // method objects (`const insertTask = new ValidatedMethod(...)`) by variable name
   const methodObjects = new Map<string, { ns: NameSource; file: string }[]>();
   for (const f of all) for (const [k, ns] of Object.entries(f.methodObjects)) push(methodObjects, k, { ns, file: f.file });
+  // object literals that may be registered elsewhere, by variable name, and the `export default` ones by module
+  const objectMaps = new Map<string, { map: ObjectMap; file: string }[]>();
+  const defaultMaps: { id: string; file: string; map: ObjectMap }[] = [];
+  for (const f of all) {
+    for (const [k, map] of Object.entries(f.objectMaps)) {
+      if (k === '@default') defaultMaps.push({ id: moduleId(f.file), file: f.file, map });
+      else push(objectMaps, k, { map, file: f.file });
+    }
+  }
 
   /** `@default(<module hint>).A.B` → the default exports of that module having `A.B`. */
   const defaultsFor = (expr: string, scope: Scope) => {
     const close = expr.indexOf(')');
     const hint = expr.slice('@default('.length, close);
     const key = expr.slice(close + 2); // after ")."
-    const absolute = hint.startsWith('/') && !/^\/[a-z]:\//.test(hint) && !hint.startsWith('//');
     const found: { value: string; loc: Loc | undefined }[] = [];
     for (const d of defaults) {
       if (!index.inScope(scope, d.file)) continue;
-      const matches = absolute
-        ? d.id.endsWith(hint) || d.id.endsWith(hint + '/index')
-        : d.id === hint || d.id === hint + '/index';
-      if (matches && d.values[key] !== undefined) found.push({ value: d.values[key], loc: d.locs[key] });
+      const matches = moduleMatches(d.id, hint);
+      const value = own(d.values, key);
+      if (matches && value !== undefined) found.push({ value, loc: own(d.locs, key) });
     }
     return found;
   };
@@ -274,8 +286,9 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
     const value = resolve(ns, file);
     if (value === undefined) return [];
     const expr = ns.nameExpr;
-    const own = byFile.get(file)?.constantLocs[expr];
-    if (own) return [own];
+    const local = byFile.get(file);
+    const here = local && own(local.constantLocs, expr);
+    if (here) return [here];
     const scope = index.scopeOf(file);
     const found = expr.startsWith('@default(') ? defaultsFor(expr, scope) : constantsFor(expr, scope);
     return found.flatMap((c) => (c.value === value && c.loc ? [c.loc] : []));
@@ -301,6 +314,7 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
     marks: new Map(),
     closes: new Map(),
     templateNames: new Set(),
+    registeredDefs: new Map(),
     resolve,
     constantLocs,
   };
@@ -365,5 +379,57 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
     for (const m of f.htmlMarks) push(a.marks, m.template, m);
     for (const c of f.htmlCloses) push(a.closes, c.template, c);
   }
+
+  // `Meteor.methods(sampleMethods)` with `sampleMethods` (or what it spreads) defined in other modules
+  const seen = new Set<string>();
+  for (const f of all) {
+    for (const r of f.registrations) {
+      const scope = index.scopeOf(f.file);
+      const visit = (ref: string, from: string, s: Scope, depth: number) => {
+        if (depth > 8) return;
+        for (const { map, file, key } of objectMapsFor(ref, from, s)) {
+          if (seen.has(`${r.kind}#${file}#${key}`)) continue;
+          seen.add(`${r.kind}#${file}#${key}`);
+          for (const m of map.members) {
+            const name = resolve(m, file);
+            if (name === undefined) continue;
+            const def = { ...m, name, kind: r.kind, env: r.env };
+            push(r.kind === 'method' ? a.methods : a.publications, name, def);
+            push(a.registeredDefs, file, def);
+          }
+          for (const sp of map.spreads) visit(sp, file, index.scopeOf(file), depth + 1);
+        }
+      };
+      visit(r.ref, f.file, scope, 0);
+    }
+  }
   return a;
+
+  /**
+   * Object maps a registration refers to: `name` (an object of the same file), `@obj:a.b` (by variable name,
+   * like method objects) or `@default(<module>)`.
+   */
+  function objectMapsFor(ref: string, from: string, scope: Scope): { map: ObjectMap; file: string; key: string }[] {
+    if (!ref.startsWith('@')) {
+      const map = byFile.get(from)?.objectMaps;
+      return map && own(map, ref) ? [{ map: map[ref], file: from, key: ref }] : [];
+    }
+    if (ref.startsWith('@default(')) {
+      const hint = ref.slice('@default('.length, ref.indexOf(')'));
+      if (ref.length > hint.length + '@default()'.length) return []; // a property of the default export
+      return defaultMaps.filter((d) => index.inScope(scope, d.file) && moduleMatches(d.id, hint)).map((d) => ({ map: d.map, file: d.file, key: '@default' }));
+    }
+    const segs = ref.slice('@obj:'.length).split('.');
+    for (let i = 0; i < segs.length; i++) {
+      const found = (objectMaps.get(segs.slice(i).join('.')) ?? []).filter((o) => index.inScope(scope, o.file));
+      if (found.length) return found.map((o) => ({ ...o, key: segs.slice(i).join('.') }));
+    }
+    return [];
+  }
+}
+
+/** Whether a module id (see `moduleId`) is the one an import hint names: `./x` (absolute path) or `/imports/x`. */
+function moduleMatches(id: string, hint: string): boolean {
+  const absolute = hint.startsWith('/') && !/^\/[a-z]:\//.test(hint) && !hint.startsWith('//');
+  return absolute ? id.endsWith(hint) || id.endsWith(hint + '/index') : id === hint || id === hint + '/index';
 }

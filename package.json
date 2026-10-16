@@ -148,6 +148,16 @@
         "category": "Meteor Power",
         "icon": "$(filter)",
         "enablement": "meteorPower.multiApp"
+      },
+      {
+        "command": "meteorPower.excludePath",
+        "title": "Exclude from Meteor Power",
+        "category": "Meteor Power"
+      },
+      {
+        "command": "meteorPower.includePath",
+        "title": "Include in Meteor Power",
+        "category": "Meteor Power"
       }
     ],
     "menus": {
@@ -236,6 +246,26 @@
         {
           "command": "meteorPower.selectApp",
           "when": "meteorPower.multiApp"
+        },
+        {
+          "command": "meteorPower.excludePath",
+          "when": "meteorPower.active && resourceScheme == file"
+        },
+        {
+          "command": "meteorPower.includePath",
+          "when": "meteorPower.active && resourceScheme == file"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "meteorPower.excludePath",
+          "when": "meteorPower.active && resourceScheme == file",
+          "group": "7_meteorPower@1"
+        },
+        {
+          "command": "meteorPower.includePath",
+          "when": "meteorPower.active && resourceScheme == file",
+          "group": "7_meteorPower@2"
         }
       ]
     },
@@ -279,11 +309,10 @@
             "**/dist/**",
             "**/build/**",
             "**/bundle/**",
-            "**/public/**",
             "**/coverage/**",
             "**/*.min.js"
           ],
-          "description": "Globs of the files to exclude from indexing. `public/` is excluded because Meteor serves it as static files (its HTML is not Blaze)."
+          "markdownDescription": "Globs of the files and folders not to index, in order. A glob starting with `!` includes again what an earlier one excludes (the last matching glob wins, like `.gitignore`): e.g. `**/build/**` then `!imports/ui/build/**`. Globs starting with `**/` match anywhere, the others are relative to the workspace folder. `node_modules`, `.git` and `.meteor/local` are never indexed. The `public/` (static files) and `private/` (server assets) folders of each Meteor app are not app code and are excluded too; a `!` glob includes them again.\n\nRight-click a file or folder in the Explorer: **Exclude from Meteor Power** / **Include in Meteor Power** edit this list in the workspace settings."
         },
         "meteorPower.methods.defineFunctions": {
           "type": "array",

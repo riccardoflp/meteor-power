@@ -5,6 +5,7 @@ import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePa
 import { MeteorIndex } from '../core/index';
 import { JsParseOptions } from '../core/jsParser';
 import { MAX_SIZE, ParsedFile, parseFile } from '../core/parseFile';
+import { PathFilter, PathStatus } from '../core/pathFilter';
 import { globToRegExp } from '../core/text';
 import { ParsePool } from './parsePool';
 
@@ -22,7 +23,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private changeTimer: NodeJS.Timeout | undefined;
   private layoutTimer: NodeJS.Timeout | undefined;
-  private excludes: RegExp[] = [];
+  private filter = new PathFilter([]);
+  private includeRe: RegExp | undefined;
   private watchers: vscode.FileSystemWatcher[] = [];
   private scanId = 0;
   private options: JsParseOptions = {};
@@ -80,7 +82,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
     const cfg = vscode.workspace.getConfiguration('meteorPower');
     const include = cfg.get<string>('include') || '**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,html}';
     const exclude = cfg.get<string[]>('exclude') ?? [];
-    this.excludes = exclude.map(globToRegExp);
+    this.filter = new PathFilter(exclude);
+    this.includeRe = globToRegExp(include);
     this.options = {
       methodDefiners: cfg.get<string[]>('methods.defineFunctions', []),
       methodCallers: cfg.get<string[]>('methods.callFunctions', []),
@@ -106,9 +109,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
     }
     this.watchers.push(layoutWatcher);
 
-    const excludeGlob = exclude.length ? `{${exclude.join(',')}}` : undefined;
     const [found, outside, layout] = await Promise.all([
-      vscode.workspace.findFiles(include, excludeGlob),
+      this.findWorkspaceFiles(include),
       Promise.all(packageDirs.map((d) => this.walk(d))).then((l) => l.flat()),
       this.detectLayout(packageDirs),
     ]);
@@ -122,7 +124,8 @@ export class WorkspaceIndexer implements vscode.Disposable {
     // the same file reached through several symlinked folders is indexed once, under its real path,
     // but every path is remembered: it tells which apps the file belongs to
     const unique = new Map<string, vscode.Uri>();
-    for (const u of [...found, ...outside]) {
+    // public/ and private/ of the apps are only known now
+    for (const u of [...found, ...outside].filter((x) => this.accepts(x))) {
       const key = this.track(u.fsPath);
       if (!unique.has(key)) unique.set(key, u);
     }
@@ -179,6 +182,17 @@ export class WorkspaceIndexer implements vscode.Disposable {
     if (skipped.length) {
       this.log.info(`Skipped ${skipped.length} minified or too large files, e.g.:`);
       for (const r of skipped.slice(0, 10)) this.log.info(`  ${rel(r.key)} (${r.skipped}, ${(r.size / 1000).toFixed(0)} KB)`);
+    }
+    const failed = parsed.filter((r) => !r.facts && !r.skipped && !r.missing);
+    if (failed.length) {
+      this.log.warn(`${failed.length} files could not be parsed: what they define is unknown, e.g.:`);
+      for (const r of failed.slice(0, 10)) this.log.warn(`  ${rel(r.key)}`);
+    }
+    // Meteor.methods(buildMethods()): the names they register are unknown, calls to them may be reported
+    const dynamic = [...this.index.allFacts()].flatMap((f) => f.dynamicRegistrations);
+    if (dynamic.length) {
+      this.log.info(`${dynamic.length} Meteor.methods / Meteor.publish registrations cannot be followed statically, e.g.:`);
+      for (const l of dynamic.slice(0, 10)) this.log.info(`  ${rel(l.file)}:${l.range.start.line + 1}`);
     }
     const slowest = [...parsed].sort((x, y) => y.parseMs - x.parseMs).slice(0, 10).filter((r) => r.parseMs >= 50);
     if (slowest.length) {
@@ -259,6 +273,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
 
   private setLayout(layout: AppLayout) {
     this.layout = layout;
+    this.filter = new PathFilter(this.filter.patterns, layout.apps.map((a) => a.id));
     this.index.setApps(new Map(layout.apps.map((a) => [a.id, a.name])));
     for (const key of this.aliases.keys()) this.updateApps(key);
   }
@@ -270,6 +285,12 @@ export class WorkspaceIndexer implements vscode.Disposable {
       const t0 = Date.now();
       const cfg = vscode.workspace.getConfiguration('meteorPower');
       const layout = await this.detectLayout(this.packageDirs(cfg.get<string[]>('packageDirs', [])));
+      const appIds = (l: AppLayout) => l.apps.map((a) => a.id).sort().join('|');
+      if (appIds(layout) !== appIds(this.layout)) {
+        // an app appeared or disappeared: its public/ and private/ change what is indexed
+        void this.rescan();
+        return;
+      }
       this.setLayout(layout);
       this.log.info(`Apps and packages changed: ${layout.apps.length} app(s), ${layout.packages.length} local package(s) (${Date.now() - t0} ms)`);
       this.fireChange();
@@ -423,10 +444,39 @@ export class WorkspaceIndexer implements vscode.Disposable {
     }
   }
 
+  /**
+   * The files to index in the workspace folders. `findFiles` takes the excluded globs, then the folders
+   * included again with `!` are searched on their own (an excluded glob would hide them).
+   */
+  private async findWorkspaceFiles(include: string): Promise<vscode.Uri[]> {
+    const globs = (list: string[]) => (list.length ? `{${list.join(',')}}` : undefined);
+    const reincluded = this.filter.reincluded;
+    const [main, ...extra] = await Promise.all([
+      vscode.workspace.findFiles(include, globs(this.filter.excludes)),
+      ...reincluded.map((g) => vscode.workspace.findFiles(g, '{**/node_modules/**,**/.git/**,**/.meteor/local/**}')),
+    ]);
+    if (!reincluded.length) return main;
+    const seen = new Set(main.map((u) => u.fsPath));
+    const more = extra.flat().filter((u) => !seen.has(u.fsPath) && this.includeRe?.test(slash(u.fsPath)) && this.accepts(u));
+    return [...main, ...more];
+  }
+
+  /** `meteorPower.exclude` with the conventional exclusions of the apps. */
+  get pathFilter(): PathFilter {
+    return this.filter;
+  }
+
+  /** Whether a file or folder is excluded by `meteorPower.exclude`, and by which pattern. */
+  pathStatus(uri: vscode.Uri, isDir = false): PathStatus {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    const rel = folder ? slash(path.relative(folder.uri.fsPath, uri.fsPath)) : undefined;
+    const inside = (p: string) => (isDir ? `${p}/x.js` : p);
+    return this.filter.status(inside(slash(uri.fsPath)), rel === undefined ? undefined : inside(rel));
+  }
+
   private accepts(uri: vscode.Uri): boolean {
     if (uri.scheme !== 'file' || !SUPPORTED.test(uri.fsPath)) return false;
-    const p = uri.fsPath.replace(/\\/g, '/');
-    return !this.excludes.some((re) => re.test(p));
+    return !this.pathStatus(uri).excluded;
   }
 
   private fireChange() {
@@ -451,6 +501,8 @@ async function readText(file: string): Promise<string | undefined> {
     return undefined;
   }
 }
+
+const slash = (p: string) => p.replace(/\\/g, '/');
 
 function isDir(p: string): boolean {
   try {

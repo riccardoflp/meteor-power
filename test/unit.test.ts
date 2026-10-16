@@ -10,13 +10,17 @@ import { Loc, Pos } from '../src/core/model';
 import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
 import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
 import { isMinified, parseFile } from '../src/core/parseFile';
+import { PathFilter, togglePath } from '../src/core/pathFilter';
 import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePackageJs } from '../src/core/apps';
 
 const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
 
 // same defaults as the extension (package.json) and the fixture's .vscode/settings.json
 const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
-const EXCLUDE: RegExp[] = manifest.contributes.configuration.properties['meteorPower.exclude'].default.map(globToRegExp);
+const slash = (p: string) => p.replace(/\\/g, '/');
+// the fixture is a Meteor app: its public/ and private/ are excluded by convention
+const FILTER = new PathFilter(manifest.contributes.configuration.properties['meteorPower.exclude'].default, [slash(ROOT)]);
+const excluded = (file: string) => FILTER.excluded(slash(file), slash(path.relative(ROOT, file)));
 const settings = JSON.parse(fs.readFileSync(path.join(ROOT, '.vscode', 'settings.json'), 'utf8'));
 const OPTIONS = {
   methodDefiners: settings['meteorPower.methods.defineFunctions'],
@@ -24,7 +28,6 @@ const OPTIONS = {
   publicationDefiners: settings['meteorPower.publications.defineFunctions'],
   subscribeCallers: settings['meteorPower.publications.subscribeFunctions'],
 };
-const slash = (p: string) => p.replace(/\\/g, '/');
 
 function walk(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -37,7 +40,7 @@ function walk(dir: string): string[] {
 const index = new MeteorIndex();
 const sources = new Map<string, string>();
 for (const file of walk(ROOT)) {
-  if (EXCLUDE.some((re) => re.test(slash(file)))) continue;
+  if (excluded(file)) continue;
   const text = fs.readFileSync(file, 'utf8');
   sources.set(file, text);
   const facts = file.endsWith('.html') ? parseHtml(file, text) : /\.(js|ts)$/.test(file) ? parseJs(file, text, OPTIONS) : undefined;
@@ -223,6 +226,44 @@ test('glob and wildcard helpers', () => {
   assert.ok(!wildcardMatch('accounts.*', 'users.login'));
 });
 
+test('exclude patterns: order, ! to include again, relative globs anchored at the workspace folder', () => {
+  const ws = '/w/app';
+  const st = (f: PathFilter, rel: string) => f.status(`${ws}/${rel}`, rel);
+  const f = new PathFilter(['**/build/**', '!imports/ui/build/**', 'imports/legacy/**', './scripts/', '**/*.min.js']);
+  assert.deepEqual(st(f, 'client/build/a.js'), { excluded: true, by: '**/build/**' });
+  assert.deepEqual(st(f, 'imports/ui/build/a.js'), { excluded: false, by: '!imports/ui/build/**' });
+  assert.equal(st(f, 'imports/ui/build/a.min.js').excluded, true);
+  assert.equal(st(f, 'imports/legacy/x/a.js').excluded, true);
+  // relative globs only match from the workspace folder, and never outside of it
+  assert.equal(st(f, 'packages/p/imports/legacy/a.js').excluded, false);
+  assert.equal(f.excluded('/elsewhere/imports/legacy/a.js'), false);
+  assert.equal(st(f, 'scripts/run.js').excluded, true);
+  assert.deepEqual(st(new PathFilter(['!**/node_modules/**']), 'node_modules/a/b.js'), { excluded: true, always: true });
+  assert.deepEqual(f.excludes, ['**/build/**', 'imports/legacy/**', './scripts/', '**/*.min.js']);
+  assert.deepEqual(f.reincluded, ['imports/ui/build/**']);
+});
+
+test('Explorer exclude / include: the rules written in meteorPower.exclude', () => {
+  const ws = '/w/app';
+  const toggle = (list: string[], rel: string, isDir: boolean, exclude: boolean) => togglePath(list, `${ws}/${rel}`, rel, isDir, exclude);
+  const defaults = ['**/node_modules/**', '**/build/**', '**/public/**'];
+  // exclude a folder, then include it again: back to the defaults
+  const excluded = toggle(defaults, 'private', true, true)!;
+  assert.deepEqual(excluded, [...defaults, 'private/**']);
+  assert.deepEqual(toggle(excluded, 'private', true, false), defaults);
+  // a folder hidden by a default glob: included with `!`, excluded again by dropping it
+  const included = toggle(defaults, 'imports/ui/build', true, false)!;
+  assert.deepEqual(included, [...defaults, '!imports/ui/build/**']);
+  assert.deepEqual(toggle(included, 'imports/ui/build', true, true), defaults);
+  // a single file inside an excluded folder
+  assert.deepEqual(toggle(excluded, 'private/keep.js', false, false), [...excluded, '!private/keep.js']);
+  // excluding a folder replaces the rules about what it contains
+  assert.deepEqual(toggle([...defaults, 'imports/a/old/**', '!imports/a/b.js'], 'imports/a', true, true), [...defaults, 'imports/a/**']);
+  // nothing to do
+  assert.equal(toggle(defaults, 'client/build', true, true), undefined);
+  assert.equal(toggle(defaults, 'client', true, false), undefined);
+});
+
 test('parser keeps going on broken files and returns null only when hopeless', () => {
   const partial = parseJs('x.js', "Meteor.methods({ 'a.b'() {} });\nMeteor.callAsync('a.b'");
   assert.ok(partial === null || partial.methods.length === 1);
@@ -264,8 +305,8 @@ test('aliases: import { X as Y }, destructuring, default imports (relative and /
   assert.deepEqual(problems(index, F('client/orders.js'), { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }), []);
 });
 
-test('public/ is excluded by default: static HTML is not Blaze', () => {
-  assert.ok(EXCLUDE.some((re) => re.test(slash(F('public/landing.html')))));
+test('public/ of the app is excluded by convention: static HTML is not Blaze', () => {
+  assert.deepEqual(FILTER.status(slash(F('public/landing.html')), 'public/landing.html'), { excluded: true, by: 'public/ of a Meteor app' });
   assert.ok(!index.a.templateNames.has('notBlaze'));
 });
 
@@ -559,6 +600,27 @@ test('ValidatedMethod objects: insertTask.call(), namespace and aliased imports,
   assert.equal(where(refs).filter((f) => f === 'client/tasksUsage.js').length, 4);
 });
 
+test('Object.prototype names are neither method objects nor constants: hasOwnProperty.call() is not a method call', () => {
+  const source = [
+    `import { Meteor } from 'meteor/meteor';`,
+    `const { hasOwnProperty } = Object.prototype;`,
+    `export function f(o) {`,
+    `  hasOwnProperty.call(o, 'a');`,
+    `  toString.call(o);`,
+    `  constructor.call(o);`,
+    `  Meteor.call(valueOf);`,
+    `}`,
+    `export default toString;`,
+  ].join('\n');
+  const facts = parseJs('proto.js', source)!;
+  assert.deepEqual(facts.calls.map((c) => [c.name, c.nameExpr]), [[undefined, 'valueOf']]);
+  assert.deepEqual(facts.defaultExport, {});
+  const idx = new MeteorIndex();
+  idx.update(facts);
+  assert.deepEqual([...idx.a.calls.keys()], []);
+  assert.deepEqual(problems(idx, 'proto.js', { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }), []);
+});
+
 test('rename a ValidatedMethod: the name string changes, the calls through the object are untouched', () => {
   const { edits, after } = doRename('client/tasksUsage.js', 'addTask.call', 1, 'tasks.add');
   assert.deepEqual(where(edits.map((e) => e.loc)), ['imports/api/tasks/tasks.js']);
@@ -577,4 +639,141 @@ test('indexing skips minified bundles and library files that only use fn.call()'
   assert.equal(parseJs('lib.js', lib)!.calls.length, 0);
   const viaImport = `import { insertTask } from './tasks';\ninsertTask.call({});`;
   assert.equal(parseJs('a.js', viaImport)!.calls.length, 1);
+});
+
+// ------------------------------------------------------------------------------- false positives (synthetic apps)
+
+/** An index of in-memory files (paths under /w/app) and the names reported missing in each file. */
+function synthetic(files: Record<string, string>) {
+  const idx = new MeteorIndex();
+  for (const [rel, text] of Object.entries(files)) {
+    const file = `/w/app/${rel}`;
+    const facts = rel.endsWith('.html') ? parseHtml(file, text) : parseJs(file, text);
+    if (facts) idx.update(facts);
+  }
+  const missing = (rel: string) =>
+    problems(idx, `/w/app/${rel}`, { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }).map((p) => /'([^']+)'/.exec(p.message)![1]);
+  return { idx, missing, facts: (rel: string) => idx.facts(`/w/app/${rel}`)! };
+}
+
+test('subscribe: only Meteor, template instances, subscription managers and Meteor.connection are DDP subscriptions', () => {
+  const { idx, missing } = synthetic({
+    'server/pubs.js': `Meteor.publish('sample.feed', function () {});`,
+    'client/feed.js': [
+      `import { Meteor } from 'meteor/meteor';`,
+      `import { Template } from 'meteor/templating';`,
+      `const subs = new SubsManager();`,
+      `Template.feed.onCreated(function () {`,
+      `  const instance = this;`,
+      `  this.subscribe('sample.missing1');`,
+      `  this.autorun(() => instance.subscribe('sample.missing2'));`,
+      `});`,
+      `function onRenderedFeed() { this.subscribe('sample.missing3'); }`,
+      `Template.feed.onRendered(onRenderedFeed);`,
+      `Template.feed.onDestroyed(() => this.subscribe('sample.arrow'));`,
+      `Template.feed.events({ 'click .x'(event, tpl) { tpl.subscribe('sample.missing4'); } });`,
+      `Template.feed.helpers({ items() { return Template.instance().subscribe('sample.missing5'); } });`,
+      `subs.subscribe('sample.missing6');`,
+      `Meteor.connection.subscribe('sample.missing7');`,
+      `Meteor.subscribe('sample.feed');`,
+      `function setup() { this.subscribe('sample.event'); }`,
+      `eventBus.subscribe('sample.event', () => {});`,
+      `cacheClient.subscribe('sample.channel', () => {});`,
+      `const remote = DDP.connect('https://example.test');`,
+      `remote.subscribe('sample.remote');`,
+    ].join('\n'),
+  });
+  assert.deepEqual(missing('client/feed.js'), ['sample.missing1', 'sample.missing2', 'sample.missing3', 'sample.missing4', 'sample.missing5', 'sample.missing6', 'sample.missing7']);
+  // the others are kept for navigation, without diagnostics
+  for (const name of ['sample.arrow', 'sample.event', 'sample.channel', 'sample.remote']) assert.ok(idx.a.subscriptions.get(name)!.every((c) => c.uncertain), name);
+});
+
+test('the Meteor object: import aliases count, a local or imported Meteor of another module does not', () => {
+  const { facts } = synthetic({
+    'client/aliased.js': `import { Meteor as M } from 'meteor/meteor';\nM.call('sample.aliased');\nif (M.isServer) { M.methods({ 'sample.server'() {} }); }`,
+    'client/fake.js': `import Meteor from './fakeMeteor';\nMeteor.call('sample.fake');\nMeteor.subscribe('sample.fakeFeed');`,
+    'client/local.js': `const Meteor = createBus();\nMeteor.call('sample.local');`,
+  });
+  assert.deepEqual(facts('client/aliased.js').calls.map((c) => c.name), ['sample.aliased']);
+  assert.deepEqual(facts('client/aliased.js').methods.map((m) => [m.name, m.env]), [['sample.server', 'server']]);
+  assert.deepEqual(facts('client/fake.js').calls, []);
+  // `.subscribe` on something else: navigation only
+  assert.deepEqual(facts('client/fake.js').subscriptions.map((s) => [s.name, s.uncertain]), [['sample.fakeFeed', true]]);
+  assert.deepEqual(facts('client/local.js').calls, []);
+});
+
+test('indirect registrations: spreads, local variables, Object.assign, named and default imports', () => {
+  const { idx, missing, facts } = synthetic({
+    'imports/api/sample/methods.js': [
+      `export const sampleMethods = {`,
+      `  async 'sample.execute'(input) { return input; },`,
+      `};`,
+      `export const notRegistered = { 'sample.unregistered'() {} };`,
+    ].join('\n'),
+    'imports/api/sample/extra.js': `const base = { 'sample.base'() {} };\nexport default { ...base, 'sample.default': function () {} };`,
+    'imports/api/sample/publications.js': `export const publications = { 'sample.items'() { return []; } };`,
+    'server/register.js': [
+      `import { Meteor } from 'meteor/meteor';`,
+      `import { sampleMethods } from '/imports/api/sample/methods';`,
+      `import extra from '../imports/api/sample/extra';`,
+      `import { publications as pubs } from '/imports/api/sample/publications';`,
+      `export function registerAll() {`,
+      `  const registrations = { ...sampleMethods, 'sample.inline'() {} };`,
+      `  Meteor.methods(registrations);`,
+      `  Meteor.methods(Object.assign({}, extra));`,
+      `  Meteor.methods(buildMethods());`,
+      `  Meteor.publish(pubs);`,
+      `}`,
+    ].join('\n'),
+    'client/calls.js': [
+      `Meteor.call('sample.execute');`,
+      `Meteor.call('sample.inline');`,
+      `Meteor.call('sample.base');`,
+      `Meteor.call('sample.default');`,
+      `Meteor.call('sample.typo');`,
+      `Meteor.call('sample.unregistered');`,
+      `Meteor.subscribe('sample.items');`,
+    ].join('\n'),
+  });
+  // a definition that is never registered is still missing
+  assert.deepEqual(missing('client/calls.js'), ['sample.typo', 'sample.unregistered']);
+  const def = idx.a.methods.get('sample.execute')!;
+  assert.deepEqual(def.map((d) => [d.loc.file, d.kind, d.env, d.isAsync]), [['/w/app/imports/api/sample/methods.js', 'method', 'server', true]]);
+  assert.deepEqual(idx.a.publications.get('sample.items')!.map((d) => d.loc.file), ['/w/app/imports/api/sample/publications.js']);
+  // Ctrl+click on the key in the module that only declares the object
+  const t = targetAt(idx, '/w/app/imports/api/sample/methods.js', { line: 1, character: 12 });
+  assert.deepEqual(t && [t.type, t.name, t.type === 'method' && t.isDef], ['method', 'sample.execute', true]);
+  // what cannot be followed statically is recorded (and logged), not guessed
+  assert.equal(facts('server/register.js').dynamicRegistrations.length, 1);
+});
+
+test('library APIs: publishComposite, FindFromPublication, useSubscribe from react-meteor-data', () => {
+  const { missing } = synthetic({
+    'server/pubs.js': `Meteor.publishComposite('sample.composite', function () { return {}; });\nFindFromPublication.publish('sample.ffp', function () {});`,
+    'client/react.js': `import { useSubscribe } from 'meteor/react-meteor-data';\nuseSubscribe('sample.composite');\nuseSubscribe('sample.ffp');\nuseSubscribe('sample.nopub');`,
+    // a function of the app with the same name is not the library's
+    'client/own.js': `import { useSubscribe } from './hooks';\nuseSubscribe('sample.nothing');`,
+  });
+  assert.deepEqual(missing('client/react.js'), ['sample.nopub']);
+  assert.deepEqual(missing('client/own.js'), []);
+});
+
+test('templates: exact names only, dynamic inclusions are not reported', () => {
+  const { missing } = synthetic({
+    'client/items.html': `<template name="sampleItems">x</template>\n<template name="list">{{> sampleItem}}{{> sampleItems}}{{> Template.dynamic template=name}}</template>`,
+  });
+  assert.deepEqual(missing('client/items.html'), ['sampleItem']);
+});
+
+test('public/ and private/ of each Meteor app are excluded by convention, other folders with those names are not', () => {
+  const f = new PathFilter([], ['/w/app', '/w/apps/admin']);
+  assert.deepEqual(f.status('/w/app/private/ace/worker.js', 'private/ace/worker.js'), { excluded: true, by: 'private/ of a Meteor app' });
+  assert.equal(f.excluded('/w/apps/admin/public/landing.html', 'apps/admin/public/landing.html'), true);
+  assert.equal(f.excluded('/w/app/imports/private/code.js', 'imports/private/code.js'), false);
+  assert.equal(f.excluded('/w/privateTools/x.js', 'privateTools/x.js'), false);
+  // included again with `!`, from the Explorer too
+  assert.equal(f.with(['!private/ace/**']).excluded('/w/app/private/ace/worker.js', 'private/ace/worker.js'), false);
+  assert.deepEqual(togglePath([], '/w/app/private', 'private', true, false, f), ['!private/**']);
+  assert.equal(togglePath([], '/w/app/private', 'private', true, true, f), undefined);
+  assert.deepEqual(togglePath(['!private/**'], '/w/app/private', 'private', true, true, f), []);
 });

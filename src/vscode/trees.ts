@@ -119,7 +119,7 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
     for (const [name, list] of uses) {
       // not defined at all, or not in (one of) the apps of the call
       const defFiles = (defs.get(name) ?? []).map((d) => d.loc.file);
-      const bad = visible(index, scope, list).filter((u) => !defFiles.length || index.missingApps(scope ?? index.scopeOf(u.loc.file), defFiles).length);
+      const bad = visible(index, scope, list).filter((u) => !u.uncertain && (!defFiles.length || index.missingApps(scope ?? index.scopeOf(u.loc.file), defFiles).length));
       if (bad.length) unknown.push({ kind: 'name', label: name, name, defs: [], uses: bad });
     }
     if (unknown.length) out.push({ kind: 'unknownGroup', items: unknown.sort((x, y) => labelOf(x).localeCompare(labelOf(y))) });

@@ -202,6 +202,46 @@ checks.push([
     assert.match(text, /async 'orders\.cancel'\(\{ orderId \}\)/);
     assert.equal(vscode.languages.getDiagnostics(doc.uri).length, 0);
     assert.ok(!api.index.a.templateNames.has('notBlaze'), 'public/ must not be indexed');
+    // not even when opened in an editor
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri('public/landing.html')));
+    await new Promise((r) => setTimeout(r, 500));
+    assert.ok(!api.index.a.templateNames.has('notBlaze'), 'an open public/ file must not be indexed');
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+  },
+]);
+
+checks.push([
+  'Explorer: Exclude from / Include in Meteor Power edit meteorPower.exclude and reindex',
+  async () => {
+    const settingsFile = uri('.vscode/settings.json');
+    const original = await vscode.workspace.fs.readFile(settingsFile);
+    const until = async (what: string, ok: () => boolean) => {
+      for (let i = 0; i < 100 && !ok(); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        await api.ready();
+      }
+      assert.ok(ok(), what);
+    };
+    const exclude = () => vscode.workspace.getConfiguration('meteorPower').get<string[]>('exclude', []);
+    try {
+      // public/ is hidden by the default `**/public/**`: included again with `!public/**`
+      await vscode.commands.executeCommand('meteorPower.includePath', uri('public'));
+      assert.equal(exclude().at(-1), '!public/**');
+      await until('public/ indexed', () => api.index.a.templateNames.has('notBlaze'));
+      // a folder and a file selected together
+      await vscode.commands.executeCommand('meteorPower.excludePath', uri('imports/api/orders'), [uri('imports/api/orders'), uri('client/orders.js')]);
+      assert.deepEqual(exclude().slice(-2), ['imports/api/orders/**', 'client/orders.js']);
+      await until('orders excluded', () => !api.index.a.methods.has('orders.cancel') && !api.index.facts(uri('client/orders.js').fsPath));
+      // and back
+      await vscode.commands.executeCommand('meteorPower.includePath', uri('imports/api/orders'), [uri('imports/api/orders'), uri('client/orders.js'), uri('public')]);
+      await vscode.commands.executeCommand('meteorPower.excludePath', uri('public'));
+      await until('back to the defaults', () => api.index.a.methods.has('orders.cancel') && !api.index.a.templateNames.has('notBlaze'));
+      assert.ok(!exclude().some((p) => p.includes('orders') || p.startsWith('!')), exclude().join(', '));
+    } finally {
+      await vscode.workspace.getConfiguration('meteorPower').update('exclude', undefined, vscode.ConfigurationTarget.Workspace);
+      await vscode.workspace.fs.writeFile(settingsFile, original);
+      await until('settings restored', () => !api.index.a.templateNames.has('notBlaze') && api.index.a.methods.has('orders.cancel'));
+    }
   },
 ]);
 

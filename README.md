@@ -12,7 +12,7 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 |---|---|
 | `Meteor.call/callAsync/apply/applyAsync('name')` | **Ctrl+Click / F12** goes to the definition in `Meteor.methods` or `new ValidatedMethod({ name })` |
 | `insertTask.call(...)`, `callAsync`, `Tasks.insertTask`, `insertTask.name` | calls through a **ValidatedMethod object** (also imported, aliased or via `import * as`) go to the method too |
-| `Meteor.subscribe('name')`, `this.subscribe(...)` | goes to `Meteor.publish('name')`, including the object form |
+| `Meteor.subscribe('name')`, `this.subscribe(...)` | goes to `Meteor.publish('name')`, including the object form, and `Meteor.publishComposite` / `FindFromPublication.publish` |
 | On a definition | **Ctrl+Click / Shift+F12** lists every call |
 | Inside the string | **completion** of the names, with parameters and docs |
 | Hover | signature, environment (server/client), file, JSDoc, number of calls |
@@ -26,6 +26,20 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 Names can also be **constants**, resolved across the whole workspace:
 `Meteor.callAsync(USERS_METHODS.RESET)`, `[USERS_METHODS.RESET]() {}`, TypeScript enums and `Object.freeze({...})`, also through
 `import { USERS_METHODS as UM }`, `import * as C`, `import NAMES from './names'` (default export), `const { RESET } = USERS_METHODS`.
+
+Methods and publications can be **registered from another module**: `Meteor.methods(sampleMethods)` with `sampleMethods`
+imported (named or default export), spread into another object (`{ ...sampleMethods, ...other }`), built in a local
+variable or with `Object.assign`. An object that is never registered does not define anything. Registrations that
+cannot be followed statically (`Meteor.methods(buildMethods())`) are listed in **Meteor Power: Show Log**.
+
+### What is a subscription
+
+`.subscribe('name')` is checked only when it is certainly a DDP subscription: `Meteor.subscribe`, `Meteor.connection.subscribe`,
+`this.subscribe` inside `onCreated` / `onRendered` / `onDestroyed`, a variable holding that `this`, `Template.instance().subscribe`,
+the template instance argument of an event handler, a `SubsManager` / `SubsCache`, and `useSubscribe` from `meteor/react-meteor-data`.
+Other receivers (`eventBus.subscribe('x', handler)`, a `DDP.connect()` to another server) still navigate to a publication with
+that name but are never reported as missing. `Meteor` means the framework object: `import { Meteor as M } from 'meteor/meteor'`
+is followed, a `Meteor` imported from another module or declared in the file is not.
 
 ### Your own wrappers
 
@@ -126,7 +140,17 @@ Quick commands (Ctrl+Shift+P): *Meteor Power: Go to Method… / Go to Publicatio
 
 ## Settings
 
-- `meteorPower.include` / `meteorPower.exclude`: which files to index. `public/` is excluded by default, because Meteor serves it as static files.
+- `meteorPower.include` / `meteorPower.exclude`: which files to index. The `public/` (static files) and `private/` (server assets)
+  folders of each Meteor app (next to its `.meteor`) are not app code and are never indexed; other folders with those names are.
+  `exclude` is read in order and the last matching glob wins; `!` includes again what an earlier glob excludes:
+
+  ```json
+  "meteorPower.exclude": ["**/node_modules/**", "**/build/**", "!imports/ui/build/**", "private/**"]
+  ```
+
+  Globs starting with `**/` match anywhere, the others are relative to the workspace folder. The easy way is the
+  Explorer: right-click a file or folder → **Exclude from Meteor Power** / **Include in Meteor Power** (several
+  can be selected); the list is updated in the workspace settings and the workspace is reindexed.
 - `meteorPower.packageDirs`: folders of local packages outside the workspace (like `METEOR_PACKAGE_DIRS`).
 - `meteorPower.methods.defineFunctions` / `callFunctions`, `meteorPower.publications.defineFunctions` / `subscribeFunctions`: your own wrappers, see above.
 - `meteorPower.diagnostics.enabled`, `meteorPower.diagnostics.severity`: turn the reported problems on or off and choose their severity.

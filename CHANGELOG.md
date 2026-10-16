@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Exclude from Meteor Power** / **Include in Meteor Power** in the Explorer context menu, for files and folders
+- `meteorPower.exclude` accepts `!glob` to include again what an earlier glob excludes (last match wins)
+- Methods and publications registered from another module: `Meteor.methods(imported)`, spreads, local variables, `Object.assign`, default exports
+- `Meteor.publishComposite` (reywood:publish-composite), `FindFromPublication.publish`, `SubsManager` / `SubsCache` and `useSubscribe` from `meteor/react-meteor-data`
+- The log lists files that could not be parsed and registrations that cannot be followed statically
+
+### Changed
+
+- `meteorPower.exclude` globs not starting with `**/` are relative to the workspace folder, as in `files.exclude`
+- `public/` and `private/` are excluded only at the root of each Meteor app (by convention), instead of the `**/public/**` glob everywhere
+
+### Fixed
+
+- `hasOwnProperty.call(...)`, `toString.call(...)` and other `Object.prototype` names were reported as calls to unknown Meteor methods
+- `.subscribe('x')` on objects that are not Meteor (`eventBus.subscribe`, `redis.subscribe`, `this.subscribe` outside a template) was reported as a missing publication
+- A `Meteor` that is not the framework object (declared in the file or imported from another module) was read as Meteor; `import { Meteor as M }` was not
+- Vendor files in an app's `private/` folder were indexed and reported
+
 ## [0.1.0] - 2026-10-08
 
 ### Added
