@@ -2,7 +2,7 @@
   "name": "meteor-power",
   "displayName": "Meteor Power",
   "description": "Navigate Meteor and Blaze code: go to definition, references, hover and completion for methods, publications, templates and helpers, plus a side panel.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "RiccardoFilippozzi",
   "license": "MIT",
   "repository": "https://github.com/riccardoflp/meteor-power",
