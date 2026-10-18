@@ -1,0 +1,18 @@
+{
+  "isopack-2": {
+    "name": "example:auth",
+    "version": "1.0.0",
+    "builds": [
+      {
+        "kind": "main",
+        "arch": "os",
+        "path": "os.json"
+      },
+      {
+        "kind": "main",
+        "arch": "web.browser",
+        "path": "web.browser.json"
+      }
+    ]
+  }
+}

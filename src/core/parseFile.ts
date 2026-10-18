@@ -5,6 +5,8 @@ import { FileFacts } from './model';
 
 /** Files above this size are not indexed. */
 export const MAX_SIZE = 1_500_000;
+/** The same for the code of Meteor packages, read for its definitions. */
+export const LIBRARY_MAX_SIZE = 30_000_000;
 
 export type SkipReason = 'too large' | 'minified';
 
@@ -26,8 +28,8 @@ export function isMinified(text: string): boolean {
 }
 
 export function parseFile(file: string, text: string, options: JsParseOptions): ParseResult {
-  if (text.length > MAX_SIZE) return { facts: null, skipped: 'too large' };
-  if (isMinified(text)) return { facts: null, skipped: 'minified' };
+  if (text.length > (options.library ? LIBRARY_MAX_SIZE : MAX_SIZE)) return { facts: null, skipped: 'too large' };
+  if (!options.library && isMinified(text)) return { facts: null, skipped: 'minified' };
   return { facts: file.toLowerCase().endsWith('.html') ? parseHtml(file, text) : parseJs(file, text, options) };
 }
 
@@ -46,7 +48,7 @@ export async function parseDiskFile(key: string, file: string, options: JsParseO
   const start = performance.now();
   try {
     const { size } = await fs.promises.stat(file);
-    if (size > MAX_SIZE) return { key, facts: null, skipped: 'too large', size, readMs: performance.now() - start, parseMs: 0 };
+    if (size > (options.library ? LIBRARY_MAX_SIZE : MAX_SIZE)) return { key, facts: null, skipped: 'too large', size, readMs: performance.now() - start, parseMs: 0 };
     const text = await fs.promises.readFile(file, 'utf8');
     const read = performance.now();
     const r = parseFile(key, text, options);

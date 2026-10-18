@@ -17,7 +17,7 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 | Inside the string | **completion** of the names, with parameters and docs |
 | Hover | signature, environment (server/client), file, JSDoc, number of calls |
 | CodeLens | `N calls` above each method, `N subscriptions` above each publication |
-| Diagnostics | warning on calls to undefined methods or publications |
+| Diagnostics | warning on calls to undefined methods or publications (Information when some Meteor packages could not be read) |
 
 ![Hover on a method called through a constant: signature, environment, file, JSDoc and number of calls](docs/images/hover-method.png)
 
@@ -29,8 +29,40 @@ Names can also be **constants**, resolved across the whole workspace:
 
 Methods and publications can be **registered from another module**: `Meteor.methods(sampleMethods)` with `sampleMethods`
 imported (named or default export), spread into another object (`{ ...sampleMethods, ...other }`), built in a local
-variable or with `Object.assign`. An object that is never registered does not define anything. Registrations that
-cannot be followed statically (`Meteor.methods(buildMethods())`) are listed in **Meteor Power: Show Log**.
+variable or with `Object.assign`, also with computed keys (`methods[NAMES.SAVE] = fn`, `{ [name]: fn }` with a
+constant `name`). An object that is never registered does not define anything. Keys added under a condition or from
+another function make the method *conditional*: calls to it are not reported, and the hover says so. Registrations that
+cannot be followed statically (`Meteor.methods(buildMethods())`, keys computed at run time) are listed in **Meteor Power: Show Log**.
+
+### Meteor packages
+
+Methods, publications, templates and global helpers defined by the **Meteor packages** of each app (Atmosphere and core
+packages listed in `.meteor/versions`) count as definitions, so calling them is not an error. Their code is read from:
+
+1. the last build of the app, `.meteor/local/build/programs/*/packages/*.js` (written by `meteor run`);
+2. otherwise the Meteor package cache, `<warehouse>/packages/<name>/<version>` for the version selected in
+   `.meteor/versions` (never another one), through its metadata (`isopack.json` and one JSON file per architecture).
+   `<warehouse>` is `METEOR_WAREHOUSE_DIR`, or `%LOCALAPPDATA%\.meteor` on Windows and `~/.meteor` elsewhere.
+
+Only one server and one client architecture are read (`web.browser.legacy` and `web.cordova` would only repeat the same
+definitions), and where the code runs counts: methods and publications come from the server code (on the client they
+are stubs), templates and helpers from the client code. Packages declared `testOnly` define names for test code only.
+Besides `Meteor.methods` and `Template.x = new Template(...)`, packages register through the DDP server
+(`Meteor.server.methods`, an object keeping it, `this._server = server || Meteor.server`) and through
+`Blaze.registerHelper` / `UI.registerHelper`; a local object named `Blaze` or `server` is not taken for them.
+
+That code is never diagnosed or renamed, and it is not listed in the side panel; **Ctrl+T** shows its definitions
+with the package name, and an app sees only the packages it uses. When the code of a package is unknown (not built on
+this machine and not in the package cache, or present but not parsable), problems are still reported, but as
+**Information**, naming those packages and why. **Meteor Power: Show Log** says where each app's packages were read
+from. Files opened in an editor from outside the workspace (a package, any other folder) are never indexed, except
+in `meteorPower.packageDirs`.
+
+### Test code
+
+Definitions in test files (`*.test.js`, `*.spec.js`, `*.app-test.js`, … and anything in a `tests/` folder of the app)
+are loaded by Meteor only in test mode: they satisfy calls from test code, while the app's own code calling them gets
+`… is only defined in test files, which the app does not load.`
 
 ### What is a subscription
 
@@ -73,6 +105,9 @@ A bare name (`callMethod`) matches both `callMethod(...)` and `Api.callMethod(..
 | **Alt+O** | switches between the HTML and the JS of the template |
 
 Local variables (`{{#each item in items}}`, `{{#let}}`) and data context fields are never reported as errors.
+Templates created in JavaScript (`Template.samplePanel = new Template(...)`) and helpers holding a template
+(`{{> panelHelper}}`) are found too; only exact names are reported, and only in apps using Blaze (`templating`,
+`blaze-html-templates`, … in `.meteor/versions`): elsewhere `{{> x}}` belongs to another template language.
 
 ![Completion inside {{ }}: the template's own helpers, inherited ones and global ones](docs/images/completion-helpers.png)
 
@@ -142,6 +177,8 @@ Quick commands (Ctrl+Shift+P): *Meteor Power: Go to Method… / Go to Publicatio
 
 - `meteorPower.include` / `meteorPower.exclude`: which files to index. The `public/` (static files) and `private/` (server assets)
   folders of each Meteor app (next to its `.meteor`) are not app code and are never indexed; other folders with those names are.
+  Output of `meteor build` (any folder with its `star.json`, even renamed or moved) is never indexed, like `node_modules`
+  and `.meteor/local`.
   `exclude` is read in order and the last matching glob wins; `!` includes again what an earlier glob excludes:
 
   ```json

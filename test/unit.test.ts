@@ -11,7 +11,9 @@ import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
 import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
 import { isMinified, parseFile } from '../src/core/parseFile';
 import { PathFilter, togglePath } from '../src/core/pathFilter';
-import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePackageJs } from '../src/core/apps';
+import { locateAppPackages, parseMeteorVersions, restrictToArch, warehouseDir } from '../src/core/meteorPackages';
+import * as os from 'os';
+import { AppLayout, AppRoot, isBuildManifest, isTestFile, normPath, PackageRoot, parseMeteorPackages, parsePackageJs, usesBlaze } from '../src/core/apps';
 
 const ROOT = path.resolve(__dirname, '../../test/fixtures/app');
 
@@ -747,6 +749,56 @@ test('indirect registrations: spreads, local variables, Object.assign, named and
   assert.equal(facts('server/register.js').dynamicRegistrations.length, 1);
 });
 
+test('registrations built with computed properties: order, conditions, dynamic keys, reassignment', () => {
+  const { idx, missing, facts } = synthetic({
+    'imports/names.js': `export const NAMES = { IMPORTED: 'sample.imported' };`,
+    'imports/api/exported.js': `export const exportedMethods = {};\nexportedMethods['sample.exported'] = function () {};`,
+    'server/register.js': [
+      `import { Meteor } from 'meteor/meteor';`,
+      `import { NAMES } from '/imports/names';`,
+      `import { exportedMethods } from '/imports/api/exported';`,
+      `const methodName = 'sample.process';`,
+      `const registrations = {};`,
+      `registrations[methodName] = async function (input) { return input; };`,
+      `registrations[NAMES.IMPORTED] = () => {};`,
+      `registrations.plain = () => {};`,
+      `if (Meteor.settings.feature) registrations['sample.feature'] = () => {};`,
+      `for (const key of keys) registrations[key] = () => {};`,
+      `Meteor.methods(registrations);`,
+      `registrations['sample.tooLate'] = () => {};`,
+      `Meteor.methods(exportedMethods);`,
+      `export function registerMore() {`,
+      `  const local = 'sample.local';`,
+      `  const more = {};`,
+      `  more[local] = () => {};`,
+      `  Meteor.methods(more);`,
+      `}`,
+      `let swapped = { 'sample.swapped'() {} };`,
+      `swapped = build();`,
+      `Meteor.methods(swapped);`,
+    ].join('\n'),
+    'client/calls.js': [
+      `Meteor.callAsync('sample.process', {});`,
+      `Meteor.callAsync('sample.imported');`,
+      `Meteor.callAsync('plain');`,
+      `Meteor.callAsync('sample.feature');`,
+      `Meteor.callAsync('sample.exported');`,
+      `Meteor.callAsync('sample.local');`,
+      `Meteor.callAsync('sample.swapped');`,
+      `Meteor.callAsync('sample.tooLate');`,
+      `Meteor.callAsync('sample.typo');`,
+    ].join('\n'),
+  });
+  // added after Meteor.methods() copied the object: not registered
+  assert.deepEqual(missing('client/calls.js'), ['sample.tooLate', 'sample.typo']);
+  assert.equal(idx.a.methods.get('sample.process')![0].isAsync, true);
+  assert.equal(idx.a.methods.get('sample.process')![0].conditional, undefined);
+  assert.equal(idx.a.methods.get('sample.feature')![0].conditional, true);
+  // the loop key and the reassigned object cannot be followed: recorded, not guessed
+  assert.equal(facts('server/register.js').dynamicRegistrations.length, 2);
+  assert.ok(!idx.a.methods.has('key'));
+});
+
 test('library APIs: publishComposite, FindFromPublication, useSubscribe from react-meteor-data', () => {
   const { missing } = synthetic({
     'server/pubs.js': `Meteor.publishComposite('sample.composite', function () { return {}; });\nFindFromPublication.publish('sample.ffp', function () {});`,
@@ -756,6 +808,34 @@ test('library APIs: publishComposite, FindFromPublication, useSubscribe from rea
   });
   assert.deepEqual(missing('client/react.js'), ['sample.nopub']);
   assert.deepEqual(missing('client/own.js'), []);
+});
+
+test('templates created in JavaScript: Template.x = new Template, helpers holding a Template, plain helpers', () => {
+  const { idx, missing } = synthetic({
+    'client/created.js': [
+      `import { Template as T } from 'meteor/templating';`,
+      `T.samplePanel = new T('Template.descriptiveName', function () { return null; });`,
+      `T.registerHelper('sampleFragment', new T('sampleFragment', function () { return null; }));`,
+      `T.registerHelper('sampleLabel', function () { return 'a string'; });`,
+      `T.registerHelper('sampleComputed', function () { return pickTemplate(); });`,
+      `T.registerHelper('samplePicked', function () { return this.big ? T.samplePanel : T.sampleFragment; });`,
+      `T.list.helpers({ localTemplate: new T('x', () => null), localText: 'text' });`,
+    ].join('\n'),
+    'client/other.js': `const Template = makeFake();\nTemplate.notBlaze = new Template('notBlaze');`,
+    'client/list.html': [
+      `<template name="list">`,
+      `  {{> samplePanel}} {{> sampleFragment}} {{> sampleComputed}} {{> samplePicked}} {{> localTemplate}}`,
+      `  {{> descriptiveName}} {{> sampleLabel}} {{> localText}} {{> notBlaze}} {{> samplePanels}}`,
+      `</template>`,
+    ].join('\n'),
+  });
+  // the constructor argument is not a name callers use; plain values and other `Template` objects are not templates
+  assert.deepEqual(missing('client/list.html'), ['descriptiveName', 'sampleLabel', 'localText', 'notBlaze', 'samplePanels']);
+  assert.deepEqual(idx.a.jsTemplates.get('samplePanel')!.map((t) => t.via), ['assignment']);
+  assert.deepEqual(idx.a.jsTemplates.get('sampleFragment')!.map((t) => t.via), ['helper']);
+  // go to definition from the inclusion
+  const usage = idx.facts('/w/app/client/list.html')!.htmlUsages.find((u) => u.name === 'samplePanel')!;
+  assert.deepEqual(definitions(idx, { type: 'template', name: 'samplePanel', loc: usage.loc, origin: 'inclusion' }).map((d) => d.loc.file), ['/w/app/client/created.js']);
 });
 
 test('templates: exact names only, dynamic inclusions are not reported', () => {
@@ -776,4 +856,302 @@ test('public/ and private/ of each Meteor app are excluded by convention, other 
   assert.deepEqual(togglePath([], '/w/app/private', 'private', true, false, f), ['!private/**']);
   assert.equal(togglePath([], '/w/app/private', 'private', true, true, f), undefined);
   assert.deepEqual(togglePath(['!private/**'], '/w/app/private', 'private', true, true, f), []);
+});
+
+test('meteor build output: recognized from star.json, whatever the folder is called, and never indexed', () => {
+  // what `meteor build --directory` writes (synthetic, reduced)
+  const star = JSON.stringify({ format: 'site-archive-pre1', builtBy: 'Meteor', programs: [{ name: 'server', arch: 'os', path: 'programs/server/program.json' }] });
+  assert.equal(isBuildManifest(star), true);
+  assert.equal(isBuildManifest(JSON.stringify({ programs: [{ path: 'programs/web.browser/program.json' }] })), true);
+  // other star.json files, broken JSON: not a build
+  assert.equal(isBuildManifest(JSON.stringify({ stars: 5 })), false);
+  assert.equal(isBuildManifest(JSON.stringify({ format: 'other' })), false);
+  assert.equal(isBuildManifest('{ "format": "site-archive'), false);
+  assert.equal(isBuildManifest('null'), false);
+
+  // a nested app built into a folder inside the workspace, with an arbitrary name
+  const f = new PathFilter(['!**/release-2/**'], ['/w/apps/admin'], ['/w/apps/admin/release-2/bundle']);
+  const st = (rel: string) => f.status(`/w/${rel}`, rel);
+  assert.deepEqual(st('apps/admin/release-2/bundle/programs/server/app/app.js'), { excluded: true, always: true, by: 'output of meteor build' });
+  assert.equal(f.excluded('/w/apps/admin/release-2/bundle/programs/web.browser/app/app.js', 'apps/admin/release-2/bundle/programs/web.browser/app/app.js'), true);
+  // the `!` pattern does not bring it back; the source next to it stays indexed
+  assert.equal(f.excluded('/w/apps/admin/release-2/notes.js', 'apps/admin/release-2/notes.js'), false);
+  assert.equal(f.excluded('/w/apps/admin/client/main.js', 'apps/admin/client/main.js'), false);
+  assert.equal(f.excluded('/w/apps/admin/release-2/bundle-old/x.js', 'apps/admin/release-2/bundle-old/x.js'), false);
+  // kept by `with` (settings changed) and by the layout
+  assert.equal(f.with([]).excluded('/w/apps/admin/release-2/bundle/main.js', 'apps/admin/release-2/bundle/main.js'), true);
+  assert.deepEqual(new AppLayout([], [], ['/w/out/bundle']).generated, ['/w/out/bundle']);
+});
+
+test('Meteor packages: compiled code is read through module.link and Package globals', () => {
+  // what a build writes for a package (synthetic): globals from Package, modules through module.link
+  const built = parseJs('/b/acme_tools.js', [
+    `(function () {`,
+    `var Meteor = Package.meteor.Meteor;`,
+    `var Template = Package['templating-runtime'].Template;`,
+    `Meteor.methods({ 'acme.ping'() {} });`,
+    `Template["acmePanel"] = new Template("Template.acmePanel", function () {});`,
+    `var require = meteorInstall({ node_modules: { meteor: { 'acme:tools': { 'server.js': function module(require, exports, module) {`,
+    `  let Meteor; module.link("meteor/meteor", { Meteor(v) { Meteor = v; } }, 0);`,
+    `  Meteor.publish('acme.feed', function () {});`,
+    `} } } } });`,
+    `})();`,
+  ].join('\n'))!;
+  assert.deepEqual(built.methods.map((m) => m.name), ['acme.ping']);
+  assert.deepEqual(built.publications.map((m) => m.name), ['acme.feed']);
+  assert.deepEqual(built.jsTemplates.map((t) => t.name), ['acmePanel']);
+  // a Meteor that is not the framework stays unknown
+  const other = parseJs('/b/other.js', `var Meteor = Package.other.Meteor;\nMeteor.methods({ 'x.y'() {} });\nlet T; module.link('meteor/meteor', { Meteor(v) { T = v; } });`)!;
+  assert.deepEqual(other.methods.map((m) => m.name), []);
+});
+
+test('Meteor packages: definitions from the last build or the package cache; packages read nowhere make diagnostics uncertain', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-pkgs-'));
+  const put = (rel: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(tmp, rel)), { recursive: true });
+    fs.writeFileSync(path.join(tmp, rel), text);
+  };
+  const touch = (rel: string, t: number) => fs.utimesSync(path.join(tmp, rel), t, t);
+  const rel = (f: string) => slash(path.relative(tmp, f));
+  const opts = { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] };
+  try {
+    assert.deepEqual([...parseMeteorVersions('meteor@1.0.0\n# x\nacme:tools@2.1.0_1\n\n')], [['meteor', '1.0.0'], ['acme:tools', '2.1.0_1']]);
+    assert.equal(warehouseDir({ METEOR_WAREHOUSE_DIR: '/x/wh' }, 'linux', '/home/u'), '/x/wh');
+    assert.equal(warehouseDir({}, 'linux', '/home/u'), path.join('/home/u', '.meteor'));
+    assert.equal(warehouseDir({}, 'win32', 'C:\\Users\\u'), undefined);
+
+    put('app/.meteor/versions', 'acme:tools@2.1.0\nbeta:lib@0.3.0\ngamma:gone@1.0.0\nlocal:pkg@1.0.0\nbuild-plugin@1.0.0\n');
+    put('app/.meteor/local/build/star.json', '{"format":"site-archive-pre1"}');
+    put('app/.meteor/local/build/programs/server/packages/acme_tools.js', `var Meteor = Package.meteor.Meteor;\nMeteor.methods({ 'acme.ping'() {} });\nMeteor.call('acme.internal');`);
+    put('app/.meteor/local/build/programs/web.browser/packages/acme_tools.js', `var Template = Package.templating.Template;\nTemplate["acmePanel"] = new Template("Template.acmePanel", function () {});`);
+    put('app/.meteor/local/build/programs/web.browser.legacy/packages/acme_tools.js', `// same package, other arch`);
+    put('wh/packages/beta_lib/0.3.0/os/server.js', `Meteor.publish('beta.items', function () {});`);
+    put('wh/packages/beta_lib/0.3.0/os/node_modules/dep/index.js', `Meteor.publish('not.read', function () {});`);
+    put('wh/packages/beta_lib/0.2.0/os/server.js', `Meteor.publish('old.version', function () {});`);
+    // the build is older than .meteor/versions: packages missing from it are looked for in the cache
+    touch('app/.meteor/local/build/star.json', 1000);
+    touch('app/.meteor/versions', 2000);
+
+    const found = await locateAppPackages(path.join(tmp, 'app'), new Set(['local:pkg']), path.join(tmp, 'wh'));
+    assert.deepEqual(found.sources.map((s) => [s.name, s.from, s.files.map((f) => `${f.arch} ${rel(f.path)}`).sort()]), [
+      ['acme:tools', 'build', ['client app/.meteor/local/build/programs/web.browser/packages/acme_tools.js', 'server app/.meteor/local/build/programs/server/packages/acme_tools.js']],
+      // only the selected version (0.3.0, not 0.2.0), without its npm dependencies
+      ['beta:lib', 'cache', ['server wh/packages/beta_lib/0.3.0/os/server.js']],
+    ]);
+    assert.deepEqual(found.missing, ['gamma:gone', 'build-plugin']);
+
+    // the index: package files define, the app's code is checked against them
+    const idx = new MeteorIndex();
+    for (const s of found.sources) for (const f of s.files) idx.updateLibrary(restrictToArch(parseJs(f.path, fs.readFileSync(f.path, 'utf8'))!, f.arch), s.name);
+    const appFile = '/w/app/client/main.js';
+    idx.update(parseJs(appFile, `Meteor.call('acme.ping');\nMeteor.subscribe('beta.items');\nMeteor.call('nowhere');`)!);
+    idx.update(parseHtml('/w/app/client/view.html', `<template name="home">{{> acmePanel}}{{> nowherePanel}}</template>`)!);
+    const check = (f: string) => problems(idx, f, opts).map((p) => [/'([^']+)'/.exec(p.message)![1], !!p.uncertain]);
+    assert.deepEqual(check(appFile), [['nowhere', false]]);
+    assert.deepEqual(check('/w/app/client/view.html'), [['nowherePanel', false]]);
+    // package code is never diagnosed (acme.internal is not defined anywhere)
+    for (const s of found.sources) for (const f of s.files) assert.deepEqual(problems(idx, f.path, opts), []);
+    assert.equal(idx.libraryOf(found.sources[0].files[0].path), 'acme:tools');
+
+    // packages whose code is unknown: still reported, as uncertain, saying why
+    idx.setPackageGaps('/w/app', [...found.missing.map((name) => ({ name, reason: 'missing' as const })), { name: 'delta:big', reason: 'unreadable' }]);
+    const p = problems(idx, appFile, opts);
+    assert.deepEqual(p.map((x) => x.uncertain), [true]);
+    assert.equal(
+      p[0].message,
+      "Meteor method 'nowhere' is not defined in the workspace. Not certain: packages build-plugin, gamma:gone not found in the app's last build or in the Meteor package cache; package delta:big could not be parsed.",
+    );
+    idx.setPackageGaps('/w/app', []);
+    assert.deepEqual(check(appFile), [['nowhere', false]]);
+
+    // an up-to-date build has every package with runtime code: the others have none
+    touch('app/.meteor/local/build/star.json', 3000);
+    const fresh = await locateAppPackages(path.join(tmp, 'app'), new Set(['local:pkg']), path.join(tmp, 'wh'));
+    assert.deepEqual(fresh.sources.map((s) => s.name), ['acme:tools']);
+    assert.deepEqual(fresh.missing, []);
+    // no build and no cache: nothing can be read
+    fs.rmSync(path.join(tmp, 'app/.meteor/local'), { recursive: true });
+    const bare = await locateAppPackages(path.join(tmp, 'app'), new Set(), undefined);
+    assert.deepEqual(bare.missing, ['acme:tools', 'beta:lib', 'gamma:gone', 'local:pkg', 'build-plugin']);
+    // never resolved: the packages listed in .meteor/packages, whose dependencies are unknown
+    fs.rmSync(path.join(tmp, 'app/.meteor/versions'));
+    put('app/.meteor/packages', 'meteor-base\nacme:tools@2.0.0 # pinned\n');
+    assert.deepEqual((await locateAppPackages(path.join(tmp, 'app'), new Set(), path.join(tmp, 'wh'))).missing, ['meteor-base', 'acme:tools']);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Meteor packages: the selected version through its isopack metadata, one server and one client arch, testOnly packages', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-iso-'));
+  const put = (rel: string, text: string) => {
+    fs.mkdirSync(path.dirname(path.join(tmp, rel)), { recursive: true });
+    fs.writeFileSync(path.join(tmp, rel), text);
+  };
+  const iso = (extra: object, archs: string[]) =>
+    JSON.stringify({ 'isopack-2': { name: 'x', builds: archs.map((arch) => ({ kind: 'main', arch, path: `${arch}.json` })), ...extra } });
+  const unibuild = (...files: string[]) => JSON.stringify({ format: 'isopack-2-unibuild', resources: files.map((file) => ({ type: 'source', file })) });
+  try {
+    put('app/.meteor/versions', 'example:auth@2.0.0\nexample:router@1.4.0\nexample:testkit@0.1.0\n');
+    // case A: a method registered by an authentication package, through the DDP server it keeps
+    put('wh/packages/example_auth/2.0.0/isopack.json', iso({}, ['os', 'web.browser', 'web.browser.legacy']));
+    put('wh/packages/example_auth/2.0.0/os.json', unibuild('os/server.js'));
+    put('wh/packages/example_auth/2.0.0/web.browser.json', unibuild('web.browser/client.js'));
+    put('wh/packages/example_auth/2.0.0/web.browser.legacy.json', unibuild('web.browser.legacy/client.js'));
+    put('wh/packages/example_auth/2.0.0/os/server.js', [
+      `let Meteor; module.link('meteor/meteor', { Meteor(v) { Meteor = v; } }, 0);`,
+      `Meteor.methods({ 'example.performTask': async function (input) { return input; } });`,
+      `class AuthServer {`,
+      `  constructor(server) { this._server = server || Meteor.server; }`,
+      `  init() {`,
+      `    const auth = this;`,
+      `    const methods = {};`,
+      `    methods['example.login'] = async function () {};`,
+      `    auth._server.methods(methods);`,
+      `  }`,
+      `}`,
+    ].join('\n'));
+    // a client stub: on the client a method is not defined
+    put('wh/packages/example_auth/2.0.0/web.browser/client.js', `Meteor.methods({ 'example.clientOnly'() {} });`);
+    put('wh/packages/example_auth/2.0.0/web.browser.legacy/client.js', `Meteor.methods({ 'example.legacy'() {} });`);
+    // another version in the cache: never read
+    put('wh/packages/example_auth/1.0.0/isopack.json', iso({}, ['os']));
+    put('wh/packages/example_auth/1.0.0/os.json', unibuild('os/server.js'));
+    put('wh/packages/example_auth/1.0.0/os/server.js', `Meteor.methods({ 'example.oldOnly'() {} });`);
+    // case B: a template created by a routing package
+    put('wh/packages/example_router/1.4.0/isopack.json', iso({}, ['os', 'web.browser']));
+    put('wh/packages/example_router/1.4.0/os.json', unibuild());
+    put('wh/packages/example_router/1.4.0/web.browser.json', unibuild('web.browser/region.js'));
+    put('wh/packages/example_router/1.4.0/web.browser/region.js', [
+      `var Template = Package['templating-runtime'].Template;`,
+      `var Blaze = Package.blaze.Blaze;`,
+      `Template.exampleRegion = new Template('exampleRegion', function () { return null; });`,
+      `Blaze.registerHelper('exampleOutlet', new Blaze.Template('exampleOutlet', function () { return null; }));`,
+    ].join('\n'));
+    // a package loaded only by `meteor test`
+    put('wh/packages/example_testkit/0.1.0/isopack.json', iso({ testOnly: true }, ['os']));
+    put('wh/packages/example_testkit/0.1.0/os.json', unibuild('os/reset.js'));
+    put('wh/packages/example_testkit/0.1.0/os/reset.js', `Meteor.methods({ 'example.resetDatabase'() {} });`);
+
+    const found = await locateAppPackages(path.join(tmp, 'app'), new Set(), path.join(tmp, 'wh'));
+    assert.deepEqual(found.missing, []);
+    assert.deepEqual(
+      found.sources.map((s) => [s.name, !!s.testOnly, s.files.map((f) => `${f.arch} ${slash(path.relative(path.join(tmp, 'wh/packages'), f.path))}`)]),
+      [
+        ['example:auth', false, ['server example_auth/2.0.0/os/server.js', 'client example_auth/2.0.0/web.browser/client.js']],
+        ['example:router', false, ['client example_router/1.4.0/web.browser/region.js']],
+        ['example:testkit', true, ['server example_testkit/0.1.0/os/reset.js']],
+      ],
+    );
+
+    // two apps of a monorepo: only `web` uses the packages
+    const idx = new MeteorIndex();
+    idx.setApps(new Map([['/w/web', 'web'], ['/w/admin', 'admin']]));
+    for (const s of found.sources) {
+      for (const f of s.files) {
+        const facts = restrictToArch(parseJs(f.path, fs.readFileSync(f.path, 'utf8'))!, f.arch);
+        idx.updateLibrary(facts, s.name, s.testOnly);
+        idx.setFileApps(f.path, ['/w/web']);
+      }
+    }
+    const add = (file: string, text: string, app: string) => {
+      idx.update(file.endsWith('.html') ? parseHtml(file, text)! : parseJs(file, text)!);
+      idx.setFileApps(file, [app]);
+    };
+    const callers = `Meteor.callAsync('example.performTask', {});\nMeteor.callAsync('example.login');\nMeteor.call('example.clientOnly');\nMeteor.call('example.legacy');\nMeteor.call('example.oldOnly');\nMeteor.call('example.resetDatabase');`;
+    add('/w/web/client/main.js', callers, '/w/web');
+    add('/w/web/client/main.test.js', `Meteor.call('example.resetDatabase');`, '/w/web');
+    add('/w/web/client/page.html', `<template name="page">{{> exampleRegion}}{{> exampleOutlet}}{{> exampleMissing}}</template>`, '/w/web');
+    add('/w/admin/client/main.js', `Meteor.callAsync('example.performTask', {});`, '/w/admin');
+    add('/w/admin/client/page.html', `<template name="adminPage">{{> exampleRegion}}</template>`, '/w/admin');
+    const msgs = (f: string) => problems(idx, f, { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }).map((p) => p.message);
+    assert.deepEqual(msgs('/w/web/client/main.js'), [
+      "Meteor method 'example.clientOnly' is not defined in the workspace.",
+      "Meteor method 'example.legacy' is not defined in the workspace.",
+      "Meteor method 'example.oldOnly' is not defined in the workspace.",
+      "Meteor method 'example.resetDatabase' is only defined in test files, which the app does not load.",
+    ]);
+    assert.deepEqual(msgs('/w/web/client/main.test.js'), []);
+    assert.deepEqual(msgs('/w/web/client/page.html'), ["Template 'exampleMissing' is not defined in the workspace."]);
+    // the other app does not use the packages
+    assert.deepEqual(msgs('/w/admin/client/main.js'), ["Meteor method 'example.performTask' is not defined in app 'admin'."]);
+    assert.deepEqual(msgs('/w/admin/client/page.html'), ["Template 'exampleRegion' is not defined in app 'admin'."]);
+    // go to definition from the app lands in the package
+    const [doc] = definitions(idx, targetAt(idx, '/w/web/client/main.js', { line: 0, character: 20 })!);
+    assert.equal(slash(path.relative(path.join(tmp, 'wh/packages'), doc.loc.file)), 'example_auth/2.0.0/os/server.js');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Meteor packages: names of the framework only when bound to it (imports, module.link, Package globals)', () => {
+  const facts = parseJs('/p/x.js', [
+    `const UI = { registerHelper() {} };`,
+    `UI.registerHelper('notAHelper', new Template('notAHelper', () => null));`,
+    `const server = { methods() {} };`,
+    `server.methods({ 'not.a.method'() {} });`,
+    `const tracker = { _server: null };`,
+    `tracker._server.methods({ 'still.not'() {} });`,
+    `var Blaze = Package.other.Blaze;`,
+    `Blaze.registerHelper('alsoNot', new Template('alsoNot', () => null));`,
+    `const ddp = Meteor.server;`,
+    `ddp.publish('example.feed', function () {});`,
+  ].join('\n'))!;
+  assert.deepEqual(facts.globalHelpers.map((h) => h.name), []);
+  assert.deepEqual(facts.methods.map((m) => m.name), []);
+  assert.deepEqual(facts.publications.map((m) => m.name), ['example.feed']);
+});
+
+test('apps without Blaze: {{> x}} is not a Blaze inclusion; certain only with .meteor/versions', () => {
+  assert.equal(usesBlaze(['meteor-base', 'react-meteor-data'], ['meteor-base', 'react-meteor-data', 'mongo']), false);
+  assert.equal(usesBlaze(['accounts-ui'], ['accounts-ui', 'templating', 'blaze']), true);
+  assert.equal(usesBlaze(['blaze-html-templates'], undefined), true);
+  // without .meteor/versions an Atmosphere package may bring Blaze in: unknown
+  assert.equal(usesBlaze(['accounts-ui'], undefined), undefined);
+
+  const html = `<template name="page">{{> sampleMissing}}</template>`;
+  const reported = (blaze: boolean | undefined) => {
+    const idx = new MeteorIndex();
+    idx.setApps(new Map([['/w/app', 'app']]), new Map([['/w/app', blaze]]));
+    idx.update(parseHtml('/w/app/client/page.html', html)!);
+    return problems(idx, '/w/app/client/page.html', { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }).length;
+  };
+  assert.equal(reported(false), 0);
+  assert.equal(reported(true), 1);
+  assert.equal(reported(undefined), 1);
+  // several apps: shared code is checked when one of its apps uses Blaze
+  const idx = new MeteorIndex();
+  idx.setApps(new Map([['/w/web', 'web'], ['/w/admin', 'admin']]), new Map([['/w/web', false], ['/w/admin', true]]));
+  idx.update(parseHtml('/w/web/client/page.html', html)!);
+  idx.update(parseHtml('/w/shared/page.html', html)!);
+  idx.setFileApps('/w/web/client/page.html', ['/w/web']);
+  idx.setFileApps('/w/shared/page.html', ['/w/admin', '/w/web']);
+  assert.equal(idx.usesBlaze('/w/web/client/page.html'), false);
+  assert.equal(idx.usesBlaze('/w/shared/page.html'), true);
+});
+
+test('test files: their definitions count only for test code', () => {
+  for (const f of ['/a.test.js', '/x/a.tests.ts', '/a.spec.jsx', '/a.app-test.js', '/a.app-specs.js', '/tests/helpers.js', '/imports/tests/x.js']) assert.equal(isTestFile(f), true, f);
+  for (const f of ['/a.js', '/test.js', '/contest.js', '/a.testing.js', '/latest/x.js', '/test/x.js']) assert.equal(isTestFile(f), false, f);
+
+  const idx = new MeteorIndex();
+  // the app lives under a folder named `tests`: that does not make its code test code
+  const app = '/w/tests/app';
+  idx.setApps(new Map([[app, 'app']]));
+  const add = (rel: string, text: string) => idx.update(parseJs(`${app}/${rel}`, text)!);
+  add('tests/fixtures.js', `Meteor.methods({ 'test.resetDatabase'() {} });`);
+  add('server/seed.app-test.js', `Meteor.methods({ 'test.seed'() {} });`);
+  add('server/methods.js', `Meteor.methods({ 'sample.save'() {} });`);
+  add('client/main.js', `Meteor.call('test.resetDatabase'); Meteor.call('test.seed'); Meteor.call('sample.save');`);
+  add('client/main.test.js', `Meteor.call('test.resetDatabase'); Meteor.call('test.seed'); Meteor.call('sample.save');`);
+  add('tests/e2e.js', `Meteor.call('test.resetDatabase');`);
+  const msgs = (rel: string) => problems(idx, `${app}/${rel}`, { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] }).map((p) => p.message);
+  assert.deepEqual(msgs('client/main.js'), [
+    "Meteor method 'test.resetDatabase' is only defined in test files, which the app does not load.",
+    "Meteor method 'test.seed' is only defined in test files, which the app does not load.",
+  ]);
+  assert.deepEqual(msgs('client/main.test.js'), []);
+  assert.deepEqual(msgs('tests/e2e.js'), []);
+  // navigation still finds them
+  assert.equal(idx.a.methods.get('test.seed')?.length, 1);
 });

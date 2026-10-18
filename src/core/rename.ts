@@ -138,6 +138,9 @@ export function renameEdits(index: MeteorIndex, t: Target, newName: string): Ren
     }
   }
   if (error) return { error };
+  // the code of Meteor packages is not the user's: a name it defines or uses cannot be renamed from here
+  const pkg = edits.map((e) => index.libraryOf(e.loc.file)).find((x) => x);
+  if (pkg) return { error: `'${t.name}' is also written in the Meteor package '${pkg}', which cannot be edited.` };
   return { edits: dedupe(edits) };
 }
 

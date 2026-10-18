@@ -1,0 +1,7 @@
+{
+  "isopack-2": {
+    "name": "templating",
+    "version": "1.0.0",
+    "builds": [{ "kind": "main", "arch": "web.browser", "path": "web.browser.json" }]
+  }
+}

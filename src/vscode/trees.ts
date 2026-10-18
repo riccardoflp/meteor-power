@@ -93,10 +93,12 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
     const scope = this.filter.scope;
     const defs = this.mode === 'methods' ? a.methods : a.publications;
     const uses = this.mode === 'methods' ? a.calls : a.subscriptions;
+    // the code of Meteor packages: its definitions answer the app's calls, but it is not listed
+    const app = <T extends { loc: Loc }>(list: readonly T[] | undefined) => (list ?? []).filter((x) => !index.libraryOf(x.loc.file));
     const root = new Map<string, NameNode>();
 
     for (const [name, all] of defs) {
-      const list = visible(index, scope, all);
+      const list = visible(index, scope, app(all));
       if (!list.length) continue;
       const segs = name.split(/[./]/).filter(Boolean);
       if (!segs.length) segs.push(name);
@@ -111,7 +113,7 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
           level = ns.children;
         }
       }
-      level.set('name:' + name, { kind: 'name', label: segs[segs.length - 1], name, defs: list, uses: visible(index, scope, uses.get(name)) });
+      level.set('name:' + name, { kind: 'name', label: segs[segs.length - 1], name, defs: list, uses: visible(index, scope, app(uses.get(name))) });
     }
 
     const out = sortNodes([...root.values()]);
@@ -119,7 +121,7 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
     for (const [name, list] of uses) {
       // not defined at all, or not in (one of) the apps of the call
       const defFiles = (defs.get(name) ?? []).map((d) => d.loc.file);
-      const bad = visible(index, scope, list).filter((u) => !u.uncertain && (!defFiles.length || index.missingApps(scope ?? index.scopeOf(u.loc.file), defFiles).length));
+      const bad = visible(index, scope, app(list)).filter((u) => !u.uncertain && (!defFiles.length || index.missingApps(scope ?? index.scopeOf(u.loc.file), defFiles).length));
       if (bad.length) unknown.push({ kind: 'name', label: name, name, defs: [], uses: bad });
     }
     if (unknown.length) out.push({ kind: 'unknownGroup', items: unknown.sort((x, y) => labelOf(x).localeCompare(labelOf(y))) });

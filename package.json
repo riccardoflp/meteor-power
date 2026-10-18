@@ -312,7 +312,7 @@
             "**/coverage/**",
             "**/*.min.js"
           ],
-          "markdownDescription": "Globs of the files and folders not to index, in order. A glob starting with `!` includes again what an earlier one excludes (the last matching glob wins, like `.gitignore`): e.g. `**/build/**` then `!imports/ui/build/**`. Globs starting with `**/` match anywhere, the others are relative to the workspace folder. `node_modules`, `.git` and `.meteor/local` are never indexed. The `public/` (static files) and `private/` (server assets) folders of each Meteor app are not app code and are excluded too; a `!` glob includes them again.\n\nRight-click a file or folder in the Explorer: **Exclude from Meteor Power** / **Include in Meteor Power** edit this list in the workspace settings."
+          "markdownDescription": "Globs of the files and folders not to index, in order. A glob starting with `!` includes again what an earlier one excludes (the last matching glob wins, like `.gitignore`): e.g. `**/build/**` then `!imports/ui/build/**`. Globs starting with `**/` match anywhere, the others are relative to the workspace folder. `node_modules`, `.git`, `.meteor/local` and the output of `meteor build` (a folder with its `star.json`) are never indexed. The `public/` (static files) and `private/` (server assets) folders of each Meteor app are not app code and are excluded too; a `!` glob includes them again.\n\nRight-click a file or folder in the Explorer: **Exclude from Meteor Power** / **Include in Meteor Power** edit this list in the workspace settings."
         },
         "meteorPower.methods.defineFunctions": {
           "type": "array",
@@ -365,7 +365,7 @@
             "hint"
           ],
           "default": "warning",
-          "description": "Severity of the reported problems."
+          "description": "Severity of the reported problems. Problems that are not certain (some Meteor packages of the app could not be read) are never more than Information."
         },
         "meteorPower.diagnostics.ignoreMethods": {
           "type": "array",

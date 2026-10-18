@@ -13,15 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `meteorPower.exclude` accepts `!glob` to include again what an earlier glob excludes (last match wins)
 - Methods and publications registered from another module: `Meteor.methods(imported)`, spreads, local variables, `Object.assign`, default exports
 - `Meteor.publishComposite` (reywood:publish-composite), `FindFromPublication.publish`, `SubsManager` / `SubsCache` and `useSubscribe` from `meteor/react-meteor-data`
+- Registrations with computed keys (`methods[NAMES.SAVE] = fn`, `{ [name]: fn }`), in order; keys added under a condition or from another function are *conditional* (never reported, shown in the hover)
+- Templates created in JavaScript (`Template.x = new Template(...)`, `Blaze.Template`) and helpers holding a template, used with `{{> helper}}`
+- **Definitions from Meteor packages** (`.meteor/versions`), read from the app's last build or from the Meteor package cache; package code is never diagnosed, renamed or listed in the side panel
+- Package code is read for the version selected in `.meteor/versions`, through the isopack metadata, for one server and one client architecture: methods and publications from server code, templates and helpers from client code; `testOnly` packages count for test code only
+- Registrations through the DDP server (`Meteor.server.methods`, `this._server = server || Meteor.server`) and `Blaze.registerHelper` / `UI.registerHelper`
+- When some Meteor packages cannot be read, problems are reported as Information, naming those packages and why (not found, or not parsable)
+- Compiled Meteor code is understood: `module.link('meteor/meteor', …)` and `Package.meteor.Meteor`; a local `Meteor`, `Template`, `Blaze` or `UI` is not the framework
 - The log lists files that could not be parsed and registrations that cannot be followed statically
 
 ### Changed
 
 - `meteorPower.exclude` globs not starting with `**/` are relative to the workspace folder, as in `files.exclude`
 - `public/` and `private/` are excluded only at the root of each Meteor app (by convention), instead of the `**/public/**` glob everywhere
+- Output of `meteor build` (a folder with its `star.json`, whatever its name) is never indexed, even when opened in an editor
+- `{{> x}}` is not reported in apps that do not use Blaze (according to `.meteor/versions`)
+- Methods, publications and templates defined only in test files (`*.test.js`, `tests/`, …) do not satisfy calls from the app's own code
 
 ### Fixed
 
+- Files opened in an editor from outside the workspace (e.g. a Meteor package reached with Go to Definition) were indexed and diagnosed, and closed or deleted documents came back after a reindex
 - `hasOwnProperty.call(...)`, `toString.call(...)` and other `Object.prototype` names were reported as calls to unknown Meteor methods
 - `.subscribe('x')` on objects that are not Meteor (`eventBus.subscribe`, `redis.subscribe`, `this.subscribe` outside a template) was reported as a missing publication
 - A `Meteor` that is not the framework object (declared in the file or imported from another module) was read as Meteor; `import { Meteor as M }` was not

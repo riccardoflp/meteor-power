@@ -1,5 +1,6 @@
+import { isTestFile, normPath } from './apps';
 import { moduleId } from './jsParser';
-import { CallSite, FileFacts, HtmlClose, HtmlMark, HtmlUsage, Loc, Member, MethodDef, NameSource, ObjectMap, own, TemplateHtml, TemplateLink, TemplatePart, TemplateRef } from './model';
+import { CallSite, FileFacts, HtmlClose, HtmlMark, HtmlUsage, JsTemplate, Loc, Member, MethodDef, NameSource, ObjectMap, own, TemplateHtml, TemplateLink, TemplatePart, TemplateRef } from './model';
 
 export type Named<T> = T & { name: string };
 export type TemplateMember = Member & { template: string };
@@ -55,6 +56,8 @@ export interface Aggregate {
   closes: MultiMap<HtmlClose>;
   /** All known template names (HTML or JS). */
   templateNames: Set<string>;
+  /** Templates created in JavaScript (`Template.x = new Template(...)`, a helper holding a Template). */
+  jsTemplates: MultiMap<JsTemplate>;
   /**
    * Methods and publications written in a file but registered from another one
    * (`export const sampleMethods = {...}`, then `Meteor.methods(sampleMethods)`), by the file defining them.
@@ -72,12 +75,24 @@ export interface Aggregate {
   constantLocs(ns: NameSource, file: string): Loc[];
 }
 
+/** A Meteor package whose definitions are unknown: `missing` (code found nowhere), `unreadable` (found, not parsed). */
+export interface PackageGap {
+  name: string;
+  reason: 'missing' | 'unreadable';
+}
+
 export class MeteorIndex {
   private readonly files = new Map<string, FileFacts>();
   /** file → ids of the Meteor apps it belongs to (absent or empty: none, visible from everywhere) */
   private readonly fileApps = new Map<string, string[]>();
   /** app id → display name */
   private appNames = new Map<string, string>();
+  /** Files of Meteor packages: their definitions count, they are never diagnosed. */
+  private readonly libraries = new Map<string, { pkg: string; testOnly: boolean }>();
+  /** app id → packages of the app whose definitions are unknown, and why */
+  private gaps = new Map<string, PackageGap[]>();
+  /** app id → whether it uses Blaze (absent: unknown) */
+  private blaze = new Map<string, boolean>();
   private agg: Aggregate | undefined;
   private _version = 0;
 
@@ -91,21 +106,74 @@ export class MeteorIndex {
   }
 
   remove(file: string) {
+    this.libraries.delete(file);
     if (this.files.delete(file)) this.invalidate();
   }
 
   clear() {
     this.files.clear();
     this.fileApps.clear();
+    this.libraries.clear();
+    this.gaps.clear();
     this.invalidate();
+  }
+
+  // -------------------------------------------------------------------------------- packages
+
+  /** Facts of a Meteor package file: used for definitions only. `testOnly`: a package loaded only by `meteor test`. */
+  updateLibrary(facts: FileFacts, pkg: string, testOnly = false) {
+    this.libraries.set(facts.file, { pkg, testOnly });
+    this.update(facts);
+  }
+
+  /** The package a file belongs to, when it is the code of a Meteor package. */
+  libraryOf(file: string): string | undefined {
+    return this.libraries.get(file)?.pkg;
+  }
+
+  /** Packages of an app whose definitions are unknown: not found, or found but not readable. */
+  setPackageGaps(app: string, gaps: PackageGap[]) {
+    if (gaps.length) this.gaps.set(app, [...gaps].sort((a, b) => a.name.localeCompare(b.name)));
+    else this.gaps.delete(app);
+    this.invalidate();
+  }
+
+  /** Packages not analyzed in the apps a file belongs to (in any app for a file outside them): names may be missing. */
+  packageGapsOf(file: string): PackageGap[] {
+    if (!this.gaps.size) return [];
+    const apps = this.fileApps.get(file);
+    const keys = apps?.length ? apps : [...this.gaps.keys()];
+    const out = new Map<string, PackageGap>();
+    for (const g of keys.flatMap((k) => this.gaps.get(k) ?? [])) out.set(g.name, g);
+    return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   // ------------------------------------------------------------------------------------ apps
 
   /** The Meteor apps of the workspace (id → display name). */
-  setApps(names: Map<string, string>) {
+  setApps(names: Map<string, string>, blaze = new Map<string, boolean | undefined>()) {
     this.appNames = new Map(names);
+    this.blaze = new Map([...blaze].filter((e): e is [string, boolean] => e[1] !== undefined));
     this.invalidate();
+  }
+
+  /** Test code of its app (see {@link isTestFile}); for a file outside every app, only its name counts. */
+  isTestCode(file: string): boolean {
+    if (this.libraries.get(file)?.testOnly) return true;
+    const n = normPath(file);
+    let app = '';
+    for (const id of this.appNames.keys()) if (n.startsWith(id + '/') && id.length > app.length) app = id;
+    return isTestFile(app ? n.slice(app.length) : n.slice(n.lastIndexOf('/')));
+  }
+
+  /**
+   * False when the apps of the file (every app, for a file outside them) certainly do not use Blaze:
+   * its `{{> x}}` are not Blaze inclusions.
+   */
+  usesBlaze(file: string): boolean {
+    const apps = this.fileApps.get(file);
+    const ids = apps?.length ? apps : [...this.appNames.keys()];
+    return !ids.length || ids.some((id) => this.blaze.get(id) !== false);
   }
 
   /** The apps a file belongs to. */
@@ -314,6 +382,7 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
     marks: new Map(),
     closes: new Map(),
     templateNames: new Set(),
+    jsTemplates: new Map(),
     registeredDefs: new Map(),
     resolve,
     constantLocs,
@@ -372,6 +441,10 @@ function buildAggregate(all: FileFacts[], index: MeteorIndex): Aggregate {
       }
     }
     for (const h of f.globalHelpers) push(a.globalHelpers, h.name, h);
+    for (const t of f.jsTemplates) {
+      push(a.jsTemplates, t.name, t);
+      a.templateNames.add(t.name);
+    }
     for (const u of f.htmlUsages) {
       push(a.usagesByTemplate, u.template, u);
       if (u.kind !== 'helper') push(a.inclusions, u.name, u);

@@ -63,9 +63,14 @@ const checks: [string, () => Promise<void>][] = [
   [
     'diagnostics: missing in the app, or in one of the apps of shared code',
     async () => {
-      assert.deepEqual(messages('admin/client/main.js'), ["Meteor method 'web.signup' is not defined in app 'admin'."]);
-      assert.deepEqual(messages('web/client/main.js'), ["Meteor method 'audit.log' is not defined in app 'web'."]);
-      assert.deepEqual(messages('shared/api.js'), ["Meteor method 'admin.purge' is not defined in app 'web'."]);
+      // the fixtures were never built and list Meteor packages: what those define is unknown, so the
+      // problems are reported as Information, naming them (the local package acme:audit is read as source)
+      const note = " Not certain: packages blaze-html-templates, meteor-base not found in the app's last build or in the Meteor package cache.";
+      assert.deepEqual(messages('admin/client/main.js'), ["Meteor method 'web.signup' is not defined in app 'admin'." + note]);
+      assert.deepEqual(messages('web/client/main.js'), ["Meteor method 'audit.log' is not defined in app 'web'." + note]);
+      assert.deepEqual(messages('shared/api.js'), ["Meteor method 'admin.purge' is not defined in app 'web'." + note]);
+      const severities = vscode.languages.getDiagnostics(uri('shared/api.js')).map((d) => d.severity);
+      assert.deepEqual(severities, [vscode.DiagnosticSeverity.Information]);
     },
   ],
   [

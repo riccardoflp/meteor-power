@@ -1,4 +1,4 @@
-import { MeteorIndex, Scope } from './index';
+import { MeteorIndex, PackageGap, Scope } from './index';
 import { Loc, Member, Pos, TemplateLink } from './model';
 import { containsPos, wildcardMatch } from './text';
 
@@ -185,16 +185,18 @@ export function templateJsDefs(index: MeteorIndex, name: string, scope: Scope = 
   const a = index.a;
   const parts = (a.parts.get(name) ?? []).filter((p) => index.inScope(scope, p.nameLoc.file)).map((p) => ({ loc: p.nameLoc, full: p.fullLoc }));
   const copies = (a.copies.get(name) ?? []).filter((l) => index.inScope(scope, l.otherLoc.file)).map((l) => ({ loc: l.otherLoc, full: l.fullLoc }));
-  return [...parts, ...copies];
+  const created = visible(index, scope, a.jsTemplates.get(name)).map((t) => ({ loc: t.loc, full: t.fullLoc }));
+  return [...created, ...parts, ...copies];
 }
 
-/** Files where a template exists: its HTML, its JS, a `copyAs` creating it. */
+/** Files where a template exists: its HTML, its JS, a `copyAs` creating it, `Template.x = new Template(...)`. */
 export function templateFiles(index: MeteorIndex, name: string): string[] {
   const a = index.a;
   return [
     ...(a.templates.get(name) ?? []).map((d) => d.loc.file),
     ...(a.parts.get(name) ?? []).map((p) => p.nameLoc.file),
     ...(a.copies.get(name) ?? []).map((l) => l.otherLoc.file),
+    ...(a.jsTemplates.get(name) ?? []).map((t) => t.loc.file),
   ];
 }
 
@@ -295,6 +297,8 @@ export interface Problem {
   loc: Loc;
   message: string;
   code: 'unknown-method' | 'unknown-publication' | 'unknown-template';
+  /** Some Meteor packages of the app could not be analyzed: the name may be defined there. */
+  uncertain?: boolean;
 }
 
 export interface DiagnosticOptions {
@@ -305,19 +309,30 @@ export interface DiagnosticOptions {
 
 export function problems(index: MeteorIndex, file: string, opts: DiagnosticOptions): Problem[] {
   const f = index.facts(file);
-  if (!f) return [];
+  // the code of Meteor packages is read for its definitions only
+  if (!f || index.libraryOf(file)) return [];
   const a = index.a;
   const scope = index.scopeOf(file);
   const ignored = (list: string[], name: string) => list.some((p) => wildcardMatch(p, name));
   const out: Problem[] = [];
+  // packages whose code could not be read may define the name: not a certain absence
+  const note = gapNote(index.packageGapsOf(file));
+  const push = (p: Problem) => out.push(note ? { ...p, message: p.message + note, uncertain: true } : p);
+  // test code sees the definitions of test files; the app does not load them
+  const testCaller = index.isTestCode(file);
   /** Not defined anywhere, or not in some of the apps this file belongs to (e.g. shared code). */
-  const check = (what: string, name: string, files: string[], loc: Loc, code: Problem['code']) => {
+  const check = (what: string, name: string, all: string[], loc: Loc, code: Problem['code']) => {
+    const files = testCaller ? all : all.filter((f) => !index.isTestCode(f));
+    if (!files.length && all.length) {
+      push({ loc, message: `${what} '${name}' is only defined in test files, which the app does not load.`, code });
+      return;
+    }
     if (!files.length) {
-      out.push({ loc, message: `${what} '${name}' is not defined in the workspace.`, code });
+      push({ loc, message: `${what} '${name}' is not defined in the workspace.`, code });
       return;
     }
     const missing = index.missingApps(scope, files);
-    if (missing.length) out.push({ loc, message: `${what} '${name}' is not defined in ${missing.length === 1 ? 'app' : 'apps'} ${appList(index, missing)}.`, code });
+    if (missing.length) push({ loc, message: `${what} '${name}' is not defined in ${missing.length === 1 ? 'app' : 'apps'} ${appList(index, missing)}.`, code });
   };
   for (const c of f.calls) {
     const name = a.resolve(c);
@@ -331,11 +346,33 @@ export function problems(index: MeteorIndex, file: string, opts: DiagnosticOptio
     if (name === undefined || ignored(opts.ignorePublications, name)) continue;
     check('Publication', name, (a.publications.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-publication');
   }
+  // in an app without Blaze, `{{> x}}` belongs to another template language
+  const blaze = index.usesBlaze(file);
   for (const u of f.htmlUsages) {
+    if (!blaze) break;
     if (u.kind !== 'inclusion' || ignored(opts.ignoreTemplates, u.name)) continue;
-    check('Template', u.name, templateFiles(index, u.name), u.loc, 'unknown-template');
+    const files = templateFiles(index, u.name);
+    // {{> name}} rendering a helper that holds a Template, or whose value cannot be told statically
+    if (!files.length && findHelper(index, u.template, u.name, scope).some((h) => h.returns)) continue;
+    check('Template', u.name, files, u.loc, 'unknown-template');
   }
   return out;
+}
+
+/** Why a missing name is not certain: the packages whose definitions are unknown, by reason. */
+function gapNote(gaps: PackageGap[]): string {
+  if (!gaps.length) return '';
+  const names = (list: PackageGap[]) => {
+    const n = list.map((g) => g.name);
+    return `${n.length === 1 ? 'package' : 'packages'} ${n.slice(0, 3).join(', ')}${n.length > 3 ? ` and ${n.length - 3} more` : ''}`;
+  };
+  const missing = gaps.filter((g) => g.reason === 'missing');
+  const unreadable = gaps.filter((g) => g.reason === 'unreadable');
+  const parts = [
+    missing.length ? `${names(missing)} not found in the app's last build or in the Meteor package cache` : '',
+    unreadable.length ? `${names(unreadable)} could not be parsed` : '',
+  ].filter(Boolean);
+  return ` Not certain: ${parts.join('; ')}.`;
 }
 
 function key(l: Loc) {

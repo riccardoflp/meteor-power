@@ -1,0 +1,1 @@
+Meteor.methods({ 'example.clientStub'() {} });

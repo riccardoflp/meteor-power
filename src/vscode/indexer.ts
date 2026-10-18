@@ -1,9 +1,11 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { AppLayout, AppRoot, normPath, PackageRoot, parseMeteorPackages, parsePackageJs } from '../core/apps';
-import { MeteorIndex } from '../core/index';
+import { AppLayout, AppRoot, isBuildManifest, normPath, PackageRoot, parseMeteorPackages, parsePackageJs, usesBlaze } from '../core/apps';
+import { MeteorIndex, PackageGap } from '../core/index';
 import { JsParseOptions } from '../core/jsParser';
+import { locateAppPackages, PackageArch, parseMeteorVersions, restrictToArch, warehouseDir } from '../core/meteorPackages';
 import { MAX_SIZE, ParsedFile, parseFile } from '../core/parseFile';
 import { PathFilter, PathStatus } from '../core/pathFilter';
 import { globToRegExp } from '../core/text';
@@ -23,7 +25,11 @@ export class WorkspaceIndexer implements vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private changeTimer: NodeJS.Timeout | undefined;
   private layoutTimer: NodeJS.Timeout | undefined;
+  /** `.meteor/versions` changed: the packages to read change, a full scan is needed. */
+  private packagesChanged = false;
   private filter = new PathFilter([]);
+  /** `meteorPower.packageDirs`: the only folders outside the workspace whose files are indexed. */
+  private outsideDirs: string[] = [];
   private includeRe: RegExp | undefined;
   private watchers: vscode.FileSystemWatcher[] = [];
   private scanId = 0;
@@ -91,6 +97,7 @@ export class WorkspaceIndexer implements vscode.Disposable {
       subscribeCallers: cfg.get<string[]>('publications.subscribeFunctions', []),
     };
     const packageDirs = this.packageDirs(cfg.get<string[]>('packageDirs', []));
+    this.outsideDirs = packageDirs.map((d) => normPath(d));
 
     for (const w of this.watchers) w.dispose();
     this.watchers = [vscode.workspace.createFileSystemWatcher(include)];
@@ -102,10 +109,14 @@ export class WorkspaceIndexer implements vscode.Disposable {
       w.onDidDelete((u) => this.onDiskDelete(u));
     }
     // app and package definitions: only the app of each file changes, nothing to parse again
-    const layoutWatcher = vscode.workspace.createFileSystemWatcher('**/{.meteor/release,.meteor/packages,package.js}');
+    const layoutWatcher = vscode.workspace.createFileSystemWatcher('**/{.meteor/release,.meteor/packages,.meteor/versions,package.js,star.json}');
     for (const ev of [layoutWatcher.onDidCreate, layoutWatcher.onDidChange, layoutWatcher.onDidDelete]) {
       // npm packages also have package.js files, and a running Meteor rewrites .meteor/local all the time
-      ev((u) => LAYOUT_SKIP.test(u.fsPath) || this.scheduleLayout());
+      ev((u) => {
+        if (LAYOUT_SKIP.test(u.fsPath)) return;
+        if (path.basename(u.fsPath) === 'versions') this.packagesChanged = true;
+        this.scheduleLayout();
+      });
     }
     this.watchers.push(layoutWatcher);
 
@@ -157,9 +168,12 @@ export class WorkspaceIndexer implements vscode.Disposable {
       () => id !== this.scanId,
     );
     if (id !== this.scanId) return;
+    await this.indexPackages(layout, id);
+    if (id !== this.scanId) return;
     const t2 = Date.now();
     // open editors may contain unsaved changes
-    for (const d of vscode.workspace.textDocuments) this.syncDocument(d);
+    // (only those: the others are as on disk, or already closed or deleted, and must not come back)
+    for (const d of vscode.workspace.textDocuments) if (d.isDirty) this.syncDocument(d);
     void this.index.a;
     const t3 = Date.now();
     this.scanning = false;
@@ -237,10 +251,17 @@ export class WorkspaceIndexer implements vscode.Disposable {
 
   /** Meteor apps (folders with `.meteor/release`) and local packages (folders with `package.js`). */
   private async detectLayout(packageDirs: string[]): Promise<AppLayout> {
-    const [releases, packageFiles] = await Promise.all([
+    const [releases, packageFiles, manifests] = await Promise.all([
       vscode.workspace.findFiles('**/.meteor/release', '{**/node_modules/**,**/.meteor/local/**}'),
       vscode.workspace.findFiles('**/package.js', '{**/node_modules/**,**/.meteor/**,**/.npm/**}'),
+      // `meteor build --directory <dir>` writes <dir>/bundle/star.json, wherever <dir> is
+      vscode.workspace.findFiles('**/star.json', '{**/node_modules/**,**/.meteor/local/**}'),
     ]);
+    const generated: string[] = [];
+    for (const m of manifests) {
+      const text = await readText(m.fsPath);
+      if (text && isBuildManifest(text)) generated.push(normPath(path.dirname(m.fsPath)));
+    }
     for (const dir of packageDirs) {
       for (const p of await this.walk(dir, /^package\.js$/)) packageFiles.push(p);
     }
@@ -254,11 +275,11 @@ export class WorkspaceIndexer implements vscode.Disposable {
     const base = (d: string) => path.basename(d);
     const unique = new Set(dirs.map(base)).size === dirs.length;
     const apps: AppRoot[] = await Promise.all(
-      dirs.map(async (dir) => ({
-        id: normPath(dir),
-        name: unique ? base(dir) : vscode.workspace.asRelativePath(dir, false),
-        packages: parseMeteorPackages((await readText(path.join(dir, '.meteor', 'packages'))) ?? ''),
-      })),
+      dirs.map(async (dir) => {
+        const packages = parseMeteorPackages((await readText(path.join(dir, '.meteor', 'packages'))) ?? '');
+        const versions = [...parseMeteorVersions((await readText(path.join(dir, '.meteor', 'versions'))) ?? '').keys()];
+        return { id: normPath(dir), name: unique ? base(dir) : vscode.workspace.asRelativePath(dir, false), packages, blaze: usesBlaze(packages, versions) };
+      }),
     );
 
     const packages: PackageRoot[] = [];
@@ -266,15 +287,16 @@ export class WorkspaceIndexer implements vscode.Disposable {
       const text = await readText(u.fsPath);
       const dir = path.dirname(u.fsPath);
       const info = text && parsePackageJs(text, path.basename(dir));
-      if (info) packages.push({ dir: normPath(dir), ...info });
+      // a build copies the packages of the app: those copies are not local packages
+      if (info && !generated.some((g) => normPath(dir).startsWith(g + '/'))) packages.push({ dir: normPath(dir), ...info });
     }
-    return new AppLayout(apps, packages);
+    return new AppLayout(apps, packages, generated);
   }
 
   private setLayout(layout: AppLayout) {
     this.layout = layout;
-    this.filter = new PathFilter(this.filter.patterns, layout.apps.map((a) => a.id));
-    this.index.setApps(new Map(layout.apps.map((a) => [a.id, a.name])));
+    this.filter = new PathFilter(this.filter.patterns, layout.apps.map((a) => a.id), layout.generated);
+    this.index.setApps(new Map(layout.apps.map((a) => [a.id, a.name])), new Map(layout.apps.map((a) => [a.id, a.blaze])));
     for (const key of this.aliases.keys()) this.updateApps(key);
   }
 
@@ -285,9 +307,9 @@ export class WorkspaceIndexer implements vscode.Disposable {
       const t0 = Date.now();
       const cfg = vscode.workspace.getConfiguration('meteorPower');
       const layout = await this.detectLayout(this.packageDirs(cfg.get<string[]>('packageDirs', [])));
-      const appIds = (l: AppLayout) => l.apps.map((a) => a.id).sort().join('|');
-      if (appIds(layout) !== appIds(this.layout)) {
-        // an app appeared or disappeared: its public/ and private/ change what is indexed
+      const dirs = (l: AppLayout) => [...l.apps.map((a) => a.id).sort(), '#', ...[...l.generated].sort()].join('|');
+      if (dirs(layout) !== dirs(this.layout) || this.packagesChanged) {
+        // an app or a build output appeared or disappeared: what is indexed changes
         void this.rescan();
         return;
       }
@@ -295,6 +317,71 @@ export class WorkspaceIndexer implements vscode.Disposable {
       this.log.info(`Apps and packages changed: ${layout.apps.length} app(s), ${layout.packages.length} local package(s) (${Date.now() - t0} ms)`);
       this.fireChange();
     }, 500);
+  }
+
+  /**
+   * Definitions of the Meteor packages of each app, from its last build or the Meteor package cache.
+   * Their files are never diagnosed; packages whose code is unknown make the app's diagnostics uncertain.
+   */
+  private async indexPackages(layout: AppLayout, id: number) {
+    this.packagesChanged = false;
+    if (!layout.apps.length) return;
+    const t0 = Date.now();
+    const warehouse = warehouseDir(process.env, process.platform, os.homedir());
+    const local = new Set(layout.packages.map((p) => p.name));
+    const files = new Map<string, { path: string; pkg: string; arch?: PackageArch; testOnly: boolean; apps: Set<string> }>();
+    /** `app|package` → keys of its files */
+    const pkgFiles = new Map<string, Set<string>>();
+    const gaps = new Map<string, PackageGap[]>();
+    for (const app of layout.apps) {
+      const found = await locateAppPackages(app.id, local, warehouse);
+      if (id !== this.scanId) return;
+      gaps.set(app.id, found.missing.map((name) => ({ name, reason: 'missing' as const })));
+      const from = { build: 0, cache: 0 };
+      for (const src of found.sources) {
+        from[src.from]++;
+        for (const f of src.files) {
+          const key = this.keyOf(f.path);
+          const entry = files.get(key) ?? { path: f.path, pkg: src.name, arch: f.arch, testOnly: !!src.testOnly, apps: new Set<string>() };
+          entry.apps.add(app.id);
+          files.set(key, entry);
+          pkgFiles.set(`${app.id}|${src.name}`, (pkgFiles.get(`${app.id}|${src.name}`) ?? new Set()).add(key));
+        }
+      }
+      const where = warehouse ? path.join(warehouse, 'packages') : 'no Meteor package cache found';
+      const missing = found.missing.length ? `; not found (${where}): ${found.missing.join(', ')}` : '';
+      this.log.info(
+        `Meteor packages of ${app.name}: ${from.build} from the last build, ${from.cache} from the package cache${missing}${found.buildNote ? ` (${found.buildNote})` : ''}`,
+      );
+    }
+    const unreadable = new Map<string, string>();
+    await this.pool.parseAll(
+      [...files].map(([key, f]) => ({ key, path: f.path })),
+      // the project's wrappers are not the packages': only Meteor's own APIs
+      { library: true },
+      (results) => {
+        if (id !== this.scanId) return;
+        for (const r of results) {
+          const f = files.get(r.key)!;
+          if (!r.facts) {
+            // a file of the package that cannot be read: what it defines is unknown
+            unreadable.set(r.key, r.skipped ?? (r.missing ? 'not readable' : 'syntax error'));
+            continue;
+          }
+          this.index.updateLibrary(restrictToArch(r.facts, f.arch), f.pkg, f.testOnly);
+          this.index.setFileApps(r.key, layout.isMulti ? [...f.apps].sort() : []);
+        }
+      },
+      () => id !== this.scanId,
+    );
+    if (id !== this.scanId) return;
+    for (const [k, keys] of pkgFiles) {
+      const [app, pkg] = k.split('|');
+      if ([...keys].some((x) => unreadable.has(x))) gaps.get(app)?.push({ name: pkg, reason: 'unreadable' });
+    }
+    for (const [app, list] of gaps) this.index.setPackageGaps(app, list);
+    for (const [key, why] of unreadable) this.log.warn(`Meteor package ${files.get(key)!.pkg}: ${key} could not be parsed (${why}); the package counts as not analyzed`);
+    this.log.info(`Meteor packages: ${files.size} file(s) indexed for definitions in ${Date.now() - t0} ms`);
   }
 
   private updateApps(key: string) {
@@ -476,6 +563,13 @@ export class WorkspaceIndexer implements vscode.Disposable {
 
   private accepts(uri: vscode.Uri): boolean {
     if (uri.scheme !== 'file' || !SUPPORTED.test(uri.fsPath)) return false;
+    // a file opened from elsewhere (a Meteor package, any other folder) is not workspace code
+    if (!vscode.workspace.getWorkspaceFolder(uri)) {
+      const n = normPath(uri.fsPath);
+      if (!this.outsideDirs.some((d) => n.startsWith(d + '/'))) return false;
+    }
+    // the code of a Meteor package, opened in an editor: already read for its definitions
+    if (this.index.libraryOf(this.keyOf(uri.fsPath))) return false;
     return !this.pathStatus(uri).excluded;
   }
 

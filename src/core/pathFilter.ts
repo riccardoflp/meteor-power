@@ -16,7 +16,7 @@ export interface PathStatus {
   excluded: boolean;
   /** The pattern deciding it (last match wins), `undefined` when no pattern matches. */
   by?: string;
-  /** node_modules, .git, .meteor/local: cannot be included. */
+  /** node_modules, .git, .meteor/local, `meteor build` output: cannot be included. */
   always?: boolean;
 }
 
@@ -28,6 +28,7 @@ export interface PathStatus {
 export class PathFilter {
   private readonly rules: Rule[];
   private readonly conventions: string[];
+  private readonly generated: string[];
 
   /**
    * `appDirs`: the folders of the Meteor apps (`/` separators). Their `public/` (static files) and `private/`
@@ -36,7 +37,10 @@ export class PathFilter {
   constructor(
     readonly patterns: readonly string[],
     private readonly appDirs: readonly string[] = [],
+    /** Folders written by `meteor build`: generated copies of the app, never indexed. */
+    private readonly generatedDirs: readonly string[] = [],
   ) {
+    this.generated = generatedDirs.map((d) => `${d.replace(/\/+$/, '')}/`.toLowerCase());
     this.conventions = appDirs.flatMap((d) => ['public', 'private'].map((x) => `${d.replace(/\/+$/, '')}/${x}/`.toLowerCase()));
     this.rules = patterns.flatMap((raw) => {
       const negated = raw.startsWith('!');
@@ -65,12 +69,13 @@ export class PathFilter {
    */
   status(abs: string, rel?: string): PathStatus {
     if (ALWAYS_EXCLUDED.test(rel ?? abs)) return { excluded: true, always: true };
+    const lower = abs.toLowerCase();
+    if (this.generated.some((d) => lower.startsWith(d))) return { excluded: true, always: true, by: 'output of meteor build' };
     for (let i = this.rules.length - 1; i >= 0; i--) {
       const r = this.rules[i];
       const hit = r.anchored ? rel !== undefined && r.re.test(rel) : r.re.test(abs);
       if (hit) return { excluded: !r.negated, by: r.pattern };
     }
-    const lower = abs.toLowerCase();
     const dir = this.conventions.find((d) => lower.startsWith(d));
     if (dir) return { excluded: true, by: `${dir.split('/').slice(-2, -1)[0]}/ of a Meteor app` };
     return { excluded: false };
@@ -78,7 +83,7 @@ export class PathFilter {
 
   /** A filter with other patterns and the same apps. */
   with(patterns: readonly string[]): PathFilter {
-    return new PathFilter(patterns, this.appDirs);
+    return new PathFilter(patterns, this.appDirs, this.generatedDirs);
   }
 
   excluded(abs: string, rel?: string): boolean {

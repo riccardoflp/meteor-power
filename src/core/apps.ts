@@ -16,6 +16,8 @@ export interface AppRoot {
   name: string;
   /** Packages listed in `.meteor/packages`. */
   packages: string[];
+  /** See {@link usesBlaze}. */
+  blaze?: boolean;
 }
 
 export interface PackageRoot {
@@ -24,6 +26,27 @@ export interface PackageRoot {
   name: string;
   /** Packages it uses or implies. */
   uses: string[];
+}
+
+/** Packages providing Blaze templates: an app without any of them has no `{{> template}}`. */
+const BLAZE_PACKAGES = ['blaze', 'templating', 'templating-runtime', 'blaze-html-templates'];
+
+/**
+ * Whether an app uses Blaze. `versions` (`.meteor/versions`) lists every package, implied ones included:
+ * the answer is certain. With `.meteor/packages` only, a package may bring Blaze in: `undefined` when none is listed.
+ */
+export function usesBlaze(packages: readonly string[], versions: readonly string[] | undefined): boolean | undefined {
+  if (versions?.length) return versions.some((p) => BLAZE_PACKAGES.includes(p));
+  return packages.some((p) => BLAZE_PACKAGES.includes(p)) ? true : undefined;
+}
+
+/**
+ * Test files, loaded by Meteor only in test mode (`*.test.js`, `*.app-spec.js`, ...), and files in `tests/`
+ * folders, never loaded by the app. `file`: the path inside the app (a folder above it named `tests` does not count).
+ */
+export function isTestFile(file: string): boolean {
+  const p = file.replace(/\\/g, '/');
+  return /\.(?:app-)?(?:test|spec)s?\.[^/.]+$/i.test(p) || /(?:^|\/)tests\//i.test(p);
 }
 
 /** Lower case on case-insensitive file systems, `/` separators, no trailing slash. */
@@ -64,6 +87,8 @@ export class AppLayout {
   constructor(
     readonly apps: AppRoot[],
     readonly packages: PackageRoot[],
+    /** Folders written by `meteor build` (with a `star.json`), normalized like app ids. */
+    readonly generated: string[] = [],
   ) {
     // deepest folders first, so that a nested package wins over the one containing it
     this.packageDirs = [...packages].sort((x, y) => y.dir.length - x.dir.length);
@@ -106,6 +131,23 @@ export class AppLayout {
     for (const p of paths) for (const id of this.appsOfPath(p)) out.add(id);
     return [...out].sort();
   }
+}
+
+/**
+ * True when `star.json` describes the output of `meteor build` (`bundle/star.json`, next to `programs/`):
+ * generated code, never indexed. The JSON is checked, not the folder name, which the user chooses.
+ */
+export function isBuildManifest(text: string): boolean {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!json || typeof json !== 'object') return false;
+  const { format, programs } = json as { format?: unknown; programs?: unknown };
+  if (typeof format === 'string' && format.startsWith('site-archive')) return true;
+  return Array.isArray(programs) && programs.some((x) => typeof x?.path === 'string' && x.path.startsWith('programs/'));
 }
 
 function isUnder(path: string, dir: string): boolean {

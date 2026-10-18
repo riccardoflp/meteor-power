@@ -1,0 +1,13 @@
+{
+  "isopack-2": {
+    "name": "example:router",
+    "version": "1.4.0",
+    "builds": [
+      {
+        "kind": "main",
+        "arch": "web.browser",
+        "path": "web.browser.json"
+      }
+    ]
+  }
+}

@@ -171,7 +171,7 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
   function appendDef(md: vscode.MarkdownString, d: Named<MethodDef>) {
     const sig = `${d.isAsync ? 'async ' : ''}'${d.name}'(${d.params.join(', ')})`;
     md.appendCodeblock(sig, 'javascript');
-    const kind = d.kind === 'validated' ? ' · ValidatedMethod' : '';
+    const kind = (d.kind === 'validated' ? ' · ValidatedMethod' : '') + (d.conditional ? ' · registered conditionally' : '');
     const apps = appsLabel(index, d.loc.file);
     md.appendMarkdown(`${ENV_LABEL[d.env]}${kind}${apps ? ` · $(package) ${apps}` : ''} · ${fileLink(d.loc)}\n\n`);
     if (d.doc) md.appendMarkdown(d.doc + '\n\n');
@@ -325,6 +325,8 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
       if (matches(name)) out.push(new vscode.SymbolInformation(name, kind, container, toLocation(l)));
     };
     const inApp = (label: string, l: Loc) => {
+      const pkg = index.libraryOf(l.file);
+      if (pkg) return `${label} · package ${pkg}`;
       const apps = appsLabel(index, l.file);
       return apps ? `${label} · ${apps}` : label;
     };
@@ -457,7 +459,8 @@ export class MeteorDiagnostics implements vscode.Disposable {
     for (const f of index.allFacts()) {
       if (!f.calls.length && !f.subscriptions.length && !f.htmlUsages.length) continue;
       const list = problems(index, f.file, opts).map((p) => {
-        const d = new vscode.Diagnostic(toRange(p.loc), p.message, severity);
+        // not a certain absence: never more than Information
+        const d = new vscode.Diagnostic(toRange(p.loc), p.message, p.uncertain ? Math.max(severity, vscode.DiagnosticSeverity.Information) : severity);
         d.source = 'Meteor Power';
         d.code = p.code;
         return d;

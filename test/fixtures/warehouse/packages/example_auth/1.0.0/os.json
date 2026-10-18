@@ -1,0 +1,9 @@
+{
+  "format": "isopack-2-unibuild",
+  "resources": [
+    {
+      "type": "source",
+      "file": "os/server.js"
+    }
+  ]
+}

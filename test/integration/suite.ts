@@ -245,6 +245,165 @@ checks.push([
   },
 ]);
 
+const until = async (what: string | (() => string), ok: () => boolean) => {
+  for (let i = 0; i < 100 && !ok(); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    await api.ready();
+  }
+  assert.ok(ok(), typeof what === 'string' ? what : what());
+};
+const ours = (u: vscode.Uri) => vscode.languages.getDiagnostics(u).filter((d) => d.source === 'Meteor Power');
+const write = (rel: string, text: string) => vscode.workspace.fs.writeFile(uri(rel), Buffer.from(text));
+
+checks.push([
+  'stale diagnostics: removed after exclusion and deletion; diagnostics of other tools untouched',
+  async () => {
+    const file = uri('scratch/stale.js');
+    const other = vscode.languages.createDiagnosticCollection('otherTool');
+    const settingsFile = uri('.vscode/settings.json');
+    const original = await vscode.workspace.fs.readFile(settingsFile);
+    try {
+      await write('scratch/stale.js', "import { Meteor } from 'meteor/meteor';\nMeteor.call('stale.unknown');\n");
+      await until('call reported', () => ours(file).some((d) => d.message.includes('stale.unknown')));
+      other.set(file, [new vscode.Diagnostic(new vscode.Range(0, 0, 0, 6), 'from another tool')]);
+      other.set(uri('client/orders.js'), [new vscode.Diagnostic(new vscode.Range(0, 0, 0, 6), 'from another tool')]);
+
+      await vscode.workspace.getConfiguration('meteorPower').update('exclude', ['scratch/**'], vscode.ConfigurationTarget.Workspace);
+      await until('excluded: our diagnostic gone', () => !ours(file).length && !api.index.facts(file.fsPath));
+      await vscode.workspace.getConfiguration('meteorPower').update('exclude', undefined, vscode.ConfigurationTarget.Workspace);
+      await until('included again: reported again', () => ours(file).length === 1);
+
+      await vscode.workspace.fs.delete(file);
+      await until('deleted: our diagnostic gone', () => !ours(file).length && !api.index.facts(file.fsPath));
+      for (const u of [file, uri('client/orders.js')]) {
+        assert.deepEqual(vscode.languages.getDiagnostics(u).filter((d) => d.message === 'from another tool').length, 1, rel(u));
+      }
+    } finally {
+      other.dispose();
+      await vscode.workspace.getConfiguration('meteorPower').update('exclude', undefined, vscode.ConfigurationTarget.Workspace);
+      await vscode.workspace.fs.delete(uri('scratch'), { recursive: true, useTrash: false }).then(undefined, () => undefined);
+      await vscode.workspace.fs.writeFile(settingsFile, original);
+    }
+  },
+]);
+
+checks.push([
+  'meteor build output: excluded as soon as star.json appears, even when opened; its diagnostics disappear',
+  async () => {
+    // a folder with any name: a renamed bundle (the default `**/bundle/**` does not match): only star.json says it is a build
+    const appFile = uri('release-out/site-2026/programs/server/app/app.js');
+    await write('release-out/site-2026/programs/server/app/app.js', "Meteor.methods({ 'bundle.only'() {} });\nMeteor.call('bundle.missing');\n");
+    try {
+      // before the manifest it is ordinary code
+      await until('indexed before the manifest', () => api.index.a.methods.has('bundle.only') && ours(appFile).length === 1);
+      await write('release-out/site-2026/star.json', JSON.stringify({ format: 'site-archive-pre1', programs: [{ name: 'server', path: 'programs/server/program.json' }] }));
+      await until('build output dropped', () => !api.index.a.methods.has('bundle.only') && !ours(appFile).length);
+      // a new file in it, and an open one, are not indexed
+      await write('release-out/site-2026/programs/web.browser/app/app.js', "Meteor.call('bundle.client');\n");
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(appFile));
+      await new Promise((r) => setTimeout(r, 800));
+      await api.ready();
+      assert.ok(!api.index.a.methods.has('bundle.only'), 'an open build file must not be indexed');
+      assert.ok(!api.index.allFacts().some((f: { file: string }) => f.file.toLowerCase().includes('release-out')), 'no build file indexed');
+      assert.equal(ours(appFile).length, 0);
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    } finally {
+      await vscode.workspace.fs.delete(uri('release-out'), { recursive: true, useTrash: false }).then(undefined, () => undefined);
+    }
+  },
+]);
+
+checks.push([
+  'Meteor packages: definitions read from the last build; a package read nowhere makes diagnostics Information',
+  async () => {
+    const check = uri('client/pkgcheck.js');
+    const built = uri('.meteor/local/build/programs/server/packages/acme_tools.js');
+    try {
+      // synthetic build of the app (written first: older than .meteor/versions, so it is not trusted to be complete)
+      await write('.meteor/local/build/star.json', JSON.stringify({ format: 'site-archive-pre1' }));
+      await write('.meteor/local/build/programs/server/packages/acme_tools.js', "var Meteor = Package.meteor.Meteor;\nMeteor.methods({ 'acme.ping'() {} });\nMeteor.call('acme.internal');\n");
+      await write('client/pkgcheck.js', "import { Meteor } from 'meteor/meteor';\nMeteor.call('acme.ping');\nMeteor.call('pkg.nowhere');\n");
+      // before .meteor/versions the app has no packages: both calls are unknown
+      await until('calls reported', () => ours(check).length === 2);
+      await new Promise((r) => setTimeout(r, 200));
+      await write('.meteor/versions', 'acme:tools@1.0.0\nmissing:pkg@1.0.0\n');
+      await until('package read', () => api.index.a.methods.has('acme.ping'));
+      await until('uncertain diagnostic', () => ours(check).length === 1 && ours(check)[0].severity === vscode.DiagnosticSeverity.Information);
+      const [d] = ours(check);
+      assert.match(d.message, /'pkg\.nowhere'.*Not certain: package missing:pkg not found in the app's last build or in the Meteor package cache\./);
+      // the package file is never diagnosed, not even when opened
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(built));
+      await new Promise((r) => setTimeout(r, 800));
+      assert.equal(ours(built).length, 0);
+      assert.ok(api.index.a.methods.has('acme.ping'));
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    } finally {
+      for (const rel of ['.meteor/versions', '.meteor/local', 'client/pkgcheck.js']) {
+        await vscode.workspace.fs.delete(uri(rel), { recursive: true, useTrash: false }).then(undefined, () => undefined);
+      }
+      await until('back to no packages', () => !api.index.a.methods.has('acme.ping') && !ours(check).length);
+    }
+  },
+]);
+
+checks.push([
+  'Meteor packages from the package cache: selected version, version change, unreachable version, local package edits',
+  async () => {
+    // METEOR_WAREHOUSE_DIR points to test/fixtures/warehouse (see run.ts): synthetic packages only
+    const js = uri('client/pkgcache.js');
+    const html = uri('client/pkgcache.html');
+    const pkgFile = vscode.Uri.file(path.resolve(root(), '..', 'warehouse', 'packages', 'example_auth', '2.0.0', 'os', 'server.js'));
+    const names = (u: vscode.Uri) => ours(u).map((d) => /'([^']+)'/.exec(d.message)![1]).sort();
+    const severityOf = (u: vscode.Uri, name: string) => ours(u).find((d) => d.message.includes(`'${name}'`))?.severity;
+    try {
+      await write(
+        'client/pkgcache.js',
+        "import { Meteor } from 'meteor/meteor';\nMeteor.callAsync('example.performTask', {});\nMeteor.callAsync('example.v1only');\nMeteor.callAsync('example.v2only');\nMeteor.call('example.clientStub');\nMeteor.call('example.nowhere');\nMeteor.call('example.local.v2');\n",
+      );
+      await write('client/pkgcache.html', '<template name="pkgCache">{{> exampleRegion}}{{> exampleMissing}}</template>\n');
+      await until('everything unknown before .meteor/versions', () => names(js).length === 6 && names(html).length === 2);
+
+      // 1, 2, 3, 9: the selected packages resolve their names, the old diagnostics go away, the missing ones stay
+      // (templating: a synthetic package without code, it makes the app a Blaze app)
+      await write('.meteor/versions', 'example:auth@1.0.0\nexample:router@1.4.0\ntemplating@1.0.0\n');
+      await until(() => `version 1.0.0 resolved: ${names(js).join()} | ${names(html).join()}`, () => names(js).join() === 'example.clientStub,example.local.v2,example.nowhere,example.v2only' && names(html).join() === 'exampleMissing');
+      assert.equal(severityOf(js, 'example.nowhere'), vscode.DiagnosticSeverity.Warning);
+      // go to definition lands in the package
+      const [doc, pos] = await posOf('client/pkgcache.js', "'example.performTask'", 3);
+      const defs = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>('vscode.executeDefinitionProvider', doc.uri, pos);
+      assert.ok(defs.some((d) => targetUri(d).fsPath.toLowerCase().endsWith(path.join('example_auth', '1.0.0', 'os', 'server.js'))), JSON.stringify(defs.map((d) => targetUri(d).fsPath)));
+
+      // 8: another version selected: the index follows it
+      await write('.meteor/versions', 'example:auth@2.0.0\nexample:router@1.4.0\ntemplating@1.0.0\n');
+      await until(() => `version 2.0.0 resolved: ${names(js).join()}`, () => names(js).join() === 'example.clientStub,example.local.v2,example.nowhere,example.v1only');
+
+      // 10: a package file opened in an editor is never diagnosed (it calls an unknown method)
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(pkgFile));
+      await new Promise((r) => setTimeout(r, 800));
+      assert.equal(ours(pkgFile).length, 0);
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+
+      // 8: a local package: its source is indexed as workspace code and follows the edits
+      await write('packages/example-local/package.js', "Package.describe({ name: 'example:local' });\nPackage.onUse((api) => { api.mainModule('methods.js', 'server'); });\n");
+      await write('packages/example-local/methods.js', "Meteor.methods({ 'example.local.v1'() {} });\n");
+      await until('local package indexed', () => api.index.a.methods.has('example.local.v1'));
+      await write('packages/example-local/methods.js', "Meteor.methods({ 'example.local.v2'() {} });\n");
+      await until('local package edit followed', () => !names(js).includes('example.local.v2') && !api.index.a.methods.has('example.local.v1'));
+
+      // 7: a selected version that cannot be found: incomplete analysis, not a certain absence
+      await write('.meteor/versions', 'example:auth@9.9.9\nexample:router@1.4.0\ntemplating@1.0.0\n');
+      await until(() => `unreachable version: ${ours(js).map((d) => `${d.severity} ${d.message}`).join(' / ')}`, () => names(js).includes('example.performTask') && severityOf(js, 'example.nowhere') === vscode.DiagnosticSeverity.Information);
+      assert.match(ours(js).find((d) => d.message.includes('example.nowhere'))!.message, /Not certain: package example:auth not found in the app's last build or in the Meteor package cache\.$/);
+      assert.equal(names(html).join(), 'exampleMissing');
+    } finally {
+      for (const rel of ['.meteor/versions', 'client/pkgcache.js', 'client/pkgcache.html', 'packages']) {
+        await vscode.workspace.fs.delete(uri(rel), { recursive: true, useTrash: false }).then(undefined, () => undefined);
+      }
+      await until(() => `back to no packages: ${api.index.a.methods.has('example.performTask')} ${ours(js).map((d) => d.message).join(' / ')}`, () => !api.index.a.methods.has('example.performTask') && !ours(js).length);
+    }
+  },
+]);
+
 checks.push([
   'ValidatedMethod objects: Ctrl+Click and references',
   async () => {

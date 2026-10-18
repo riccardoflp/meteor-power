@@ -35,6 +35,8 @@ async function main() {
       vscodeExecutablePath,
       extensionDevelopmentPath: root,
       extensionTestsPath: path.join(root, 'out', 'test', 'integration', r.suite),
+      // a synthetic Meteor package cache: the tests never read the developer's own
+      extensionTestsEnv: { METEOR_WAREHOUSE_DIR: path.join(root, 'test', 'fixtures', 'warehouse') },
       launchArgs: [
         r.workspace,
         '--disable-extensions',

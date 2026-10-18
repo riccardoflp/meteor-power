@@ -52,6 +52,11 @@ export interface JsParseOptions {
   methodCallers?: string[];
   publicationDefiners?: string[];
   subscribeCallers?: string[];
+  /**
+   * The code of a Meteor package, read only for its definitions: large and minified files are parsed too
+   * (skipping them would leave the package's definitions unknown).
+   */
+  library?: boolean;
 }
 
 /** Property names holding the function in `definer({ name, run })` forms. */
@@ -100,6 +105,17 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
   const imported = new Set<string>();
   /** Names of the Meteor object: `Meteor` unless the file declares or imports another `Meteor`, plus `import { Meteor as M }`. */
   const meteorNames = new Set(['Meteor']);
+  /** Same for the Blaze `Template` (meteor/templating, meteor/blaze). */
+  const templateIds = new Set(['Template']);
+  /** Same for the `Blaze` namespace and its old name `UI` (`Blaze.registerHelper`, `new Blaze.Template`). */
+  const blazeIds = new Set(['Blaze', 'UI']);
+  const frameworkIds: Record<string, Set<string>> = { Meteor: meteorNames, Template: templateIds, Blaze: blazeIds, UI: blazeIds };
+  /**
+   * The DDP server, where methods and publications are registered too: variables holding `Meteor.server`
+   * and properties assigned from it (`this._server = server || Meteor.server`, then `accounts._server.methods(...)`).
+   */
+  const serverIds = new Set<string>();
+  const serverProps = new Set<string>();
   /** Subscribe functions imported from their package (`useSubscribe` from meteor/react-meteor-data). */
   const subscribeFns = new Set<string>();
   /** Template lifecycle callbacks: inside them `this` is the template instance. */
@@ -110,6 +126,15 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
   const thisStack: boolean[] = [];
   /** Object literals assigned to a variable anywhere in the file (registrations built inside a function). */
   const localObjects = new Map<string, Node>();
+  /** `registrations[name] = fn`, `registrations.x = fn`: assignments to a member, by object variable. */
+  const memberAssignments = new Map<string, Node[]>();
+  /** Variables assigned again (`registrations = other`): their content is not known statically. */
+  const reassigned = new Set<string>();
+  /** `const name = 'a.b'` inside functions (top-level ones are in `facts.constants`). */
+  const localStrings = new Map<string, string>();
+  /** Every function, and the parts of the code that may not run (if branches, loops, catch, `a && b`). */
+  const functions: Node[] = [];
+  const conditionalRanges: [number, number][] = [];
 
   collectTopLevel(ast.program);
   collectAliases(ast.program);
@@ -234,20 +259,50 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       for (const sp of stmt.specifiers ?? []) {
         const local = sp.local?.name;
         const name = sp.type === 'ImportSpecifier' ? (sp.imported?.type === 'Identifier' ? sp.imported.name : sp.imported?.value) : undefined;
-        if (spec === 'meteor/meteor' && name === 'Meteor') meteorNames.add(local);
-        else if (local === 'Meteor') meteorNames.delete('Meteor');
+        for (const g of Object.keys(FRAMEWORK)) {
+          if (name === g && FRAMEWORK[g].modules.includes(spec)) frameworkIds[g].add(local);
+          else if (local === g) frameworkIds[g].delete(g);
+        }
         if (SUBSCRIBE_EXPORTS[spec] !== undefined && name === SUBSCRIBE_EXPORTS[spec]) subscribeFns.add(local);
       }
     }
+    // compiled Meteor code (package sources, build output): imports become `let Meteor; module.link('meteor/meteor',
+    // { Meteor(v) { Meteor = v } })`, and package globals `var Meteor = Package.meteor.Meteor`
+    const linked = new Set<string>();
+    forEachNode(program, (n) => {
+      const link = moduleLink(n);
+      if (!link) return;
+      for (const [name, local] of link.bindings) {
+        if (!own(FRAMEWORK, name)?.modules.includes(link.spec)) continue;
+        frameworkIds[name].add(local);
+        linked.add(local);
+      }
+    });
+    const declares = (n: Node, name: string) => {
+      if (n.id?.name !== name || linked.has(name)) return false;
+      if (n.type !== 'VariableDeclarator') return n.type === 'FunctionDeclaration' || n.type === 'ClassDeclaration';
+      const from = n.init && packageGlobal(unwrap(n.init));
+      return !(from && from.name === name && FRAMEWORK[name].pkgs.includes(from.pkg));
+    };
+    const serverCandidates: [string, Node, boolean][] = [];
     const fnDecls = new Map<string, Node>();
     const lifecycleRefs: string[] = [];
     forEachNode(program, (n) => {
-      if ((n.type === 'FunctionDeclaration' || n.type === 'ClassDeclaration') && n.id?.name === 'Meteor') meteorNames.delete('Meteor');
+      collectFlow(n);
+      if ((n.type === 'FunctionDeclaration' || n.type === 'ClassDeclaration' || (n.type === 'VariableDeclarator' && n.init)) && declares(n, 'Meteor')) meteorNames.delete('Meteor');
+      for (const g of ['Template', 'Blaze', 'UI']) {
+        if ((n.type === 'FunctionDeclaration' || n.type === 'ClassDeclaration' || n.type === 'VariableDeclarator') && declares(n, g)) frameworkIds[g].delete(g);
+      }
+      // candidates for the DDP server, checked once the Meteor names are known
+      if (n.type === 'VariableDeclarator' && n.id?.type === 'Identifier' && n.init) serverCandidates.push([n.id.name, n.init, false]);
+      if (n.type === 'AssignmentExpression' && n.operator === '=') {
+        if (n.left.type === 'Identifier') serverCandidates.push([n.left.name, n.right, false]);
+        else if (isMember(n.left) && propName(n.left)) serverCandidates.push([propName(n.left)!, n.right, true]);
+      }
       if (n.type === 'FunctionDeclaration' && n.id) fnDecls.set(n.id.name, n);
       if (n.type === 'VariableDeclarator' && n.id?.type === 'Identifier' && n.init) {
         const name: string = n.id.name;
         const init = unwrap(n.init);
-        if (name === 'Meteor') meteorNames.delete('Meteor');
         if (init.type === 'FunctionExpression') fnDecls.set(name, init);
         if (init.type === 'ObjectExpression' && !localObjects.has(name)) localObjects.set(name, init);
         // new SubsManager(), Template.instance()
@@ -276,15 +331,182 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       const fn = fnDecls.get(name);
       if (fn) lifecycleFns.add(fn);
     }
+    // twice, for `const s = Meteor.server; this._server = s`
+    for (let pass = 0; pass < 2; pass++) {
+      for (const [name, value, isProp] of serverCandidates) if (isServerValue(value)) (isProp ? serverProps : serverIds).add(name);
+    }
+  }
+
+  /** `Meteor.server`, a variable holding it, or an expression that may give it (`server || Meteor.server`). */
+  function isServerValue(n: Node): boolean {
+    const u = n && unwrap(n);
+    if (!u) return false;
+    if (u.type === 'Identifier') return serverIds.has(u.name);
+    if (u.type === 'LogicalExpression') return isServerValue(u.left) || isServerValue(u.right);
+    if (u.type === 'ConditionalExpression') return isServerValue(u.consequent) || isServerValue(u.alternate);
+    return isMember(u) && isMeteor(u.object) && propName(u) === 'server';
+  }
+
+  /** The receiver of `.methods()` / `.publish()` is the DDP server. */
+  function isDdpServer(n: Node): boolean {
+    if (isServerValue(n)) return true;
+    const p = isMember(n) ? propName(n) : undefined;
+    return p !== undefined && serverProps.has(p);
+  }
+
+  /** Assignments, local string constants, functions and conditional code, for registrations built step by step. */
+  function collectFlow(n: Node) {
+    switch (n.type) {
+      case 'AssignmentExpression':
+        if (n.operator !== '=') break;
+        if (isMember(n.left) && n.left.object?.type === 'Identifier') {
+          const list = memberAssignments.get(n.left.object.name);
+          if (list) list.push(n);
+          else memberAssignments.set(n.left.object.name, [n]);
+        } else if (n.left.type === 'Identifier') reassigned.add(n.left.name);
+        break;
+      case 'VariableDeclaration':
+        if (n.kind !== 'const') break;
+        for (const d of n.declarations) {
+          const s = d.id?.type === 'Identifier' && d.init ? staticString(unwrap(d.init)) : undefined;
+          if (s !== undefined && !localStrings.has(d.id.name)) localStrings.set(d.id.name, s);
+        }
+        break;
+      case 'FunctionDeclaration':
+      case 'FunctionExpression':
+      case 'ArrowFunctionExpression':
+      case 'ObjectMethod':
+      case 'ClassMethod':
+        functions.push(n);
+        break;
+      case 'IfStatement':
+        for (const b of [n.consequent, n.alternate]) if (b) conditionalRanges.push([b.start, b.end]);
+        break;
+      case 'ConditionalExpression':
+        conditionalRanges.push([n.consequent.start, n.consequent.end], [n.alternate.start, n.alternate.end]);
+        break;
+      case 'LogicalExpression':
+        conditionalRanges.push([n.right.start, n.right.end]);
+        break;
+      case 'ForStatement':
+      case 'ForInStatement':
+      case 'ForOfStatement':
+      case 'WhileStatement':
+      case 'DoWhileStatement':
+      case 'SwitchCase':
+      case 'CatchClause':
+        conditionalRanges.push([n.start, n.end]);
+        break;
+    }
+  }
+
+  /** The innermost function containing a position (`undefined`: top level). */
+  function functionAt(pos: number): Node | undefined {
+    let best: Node | undefined;
+    for (const f of functions) if (f.start <= pos && pos < f.end && (!best || f.start >= best.start)) best = f;
+    return best;
+  }
+
+  /**
+   * `obj[key] = fn` / `obj.key = fn` for the object variable `name` declared by `decl`, as definitions.
+   * `at`: the registration call; assignments after it in the same function are not registered
+   * (`Meteor.methods` copies the object), those in other functions or under a condition are conditional.
+   */
+  function assignedDefs(name: string, decl: Node, kind: 'method' | 'publication', env: Env, at?: Node, registered = true): MethodDef[] {
+    const out: MethodDef[] = [];
+    const declFn = functionAt(decl.start);
+    const atFn = at && functionAt(at.start);
+    for (const a of memberAssignments.get(name) ?? []) {
+      const fn = functionAt(a.start);
+      if (at && fn === atFn && a.start > at.start) continue;
+      const key = memberKey(a.left);
+      if (!key) {
+        // only worth logging when the object is certainly registered
+        if (registered) facts.dynamicRegistrations.push(loc(a.left.start, a.left.end));
+        continue;
+      }
+      const def = makeDef(key, kind, fnOf(a.right), a, env, undefined);
+      const insideCondition = conditionalRanges.some(([s, e]) => s <= a.start && a.end <= e && !(s <= decl.start && decl.end <= e));
+      if (fn !== declFn || insideCondition) def.conditional = true;
+      out.push(def);
+    }
+    return out;
+  }
+
+  /** The key of `obj.key` / `obj['a.b']` / `obj[NAME]` when it is known statically. */
+  function memberKey(m: Node): NameResult | undefined {
+    const p = m.property;
+    if (!m.computed) return p.type === 'Identifier' ? { name: p.name, kind: 'ident', start: p.start, end: p.end } : undefined;
+    const raw = exprPath(unwrap(p));
+    if (raw && !raw.includes('.') && localStrings.has(raw) && !reassigned.has(raw) && own(facts.constants, raw) === undefined) {
+      return { name: localStrings.get(raw), kind: 'expr', nameExpr: raw, start: p.start, end: p.end };
+    }
+    const n = nameOf(p);
+    if (!n || n.name !== undefined) return n;
+    // a constant: declared at the top of this file or imported, not a local variable such as a loop index
+    const head = raw?.split('.')[0];
+    const expanded = n.nameExpr ?? '';
+    return head && (imported.has(head) || own(facts.constants, expanded) !== undefined || expanded.startsWith('@')) ? n : undefined;
+  }
+
+  function isTemplateId(n: Node): boolean {
+    return n?.type === 'Identifier' && templateIds.has(n.name);
+  }
+
+  /** `new Template(...)` */
+  function isNewTemplate(n: Node): boolean {
+    const u = n && unwrap(n);
+    return u?.type === 'NewExpression' && (isTemplateId(u.callee) || (isMember(u.callee) && isBlaze(u.callee.object) && propName(u.callee) === 'Template'));
+  }
+
+  /**
+   * What a helper gives to `{{> name}}`: `template` for a Template (`new Template(...)`, `Template.x`, a function
+   * returning one), `unknown` when it cannot be told statically, `undefined` for plain values (strings, numbers…).
+   */
+  function helperReturns(value: Node): Member['returns'] {
+    const v = value && unwrap(value);
+    if (!v) return undefined;
+    const kindOf = (e: Node): Member['returns'] | 'value' => {
+      const x = e && unwrap(e);
+      if (!x) return 'value';
+      if (isNewTemplate(x) || templateNameOf(x)) return 'template';
+      if (staticString(x) !== undefined || /Literal$/.test(x.type) || x.type === 'ObjectExpression' || x.type === 'ArrayExpression') return 'value';
+      if (x.type === 'TemplateLiteral' || x.type === 'BinaryExpression') return 'value';
+      return 'unknown';
+    };
+    const fn = v.type === 'ObjectMethod' || v.type === 'FunctionExpression' || v.type === 'ArrowFunctionExpression' ? v : undefined;
+    if (!fn) {
+      const k = kindOf(v);
+      return k === 'value' ? undefined : k;
+    }
+    const results: Node[] = [];
+    if (fn.body.type !== 'BlockStatement') results.push(fn.body);
+    else {
+      // return statements of this function, not of the functions inside it
+      const visit = (n: Node) => {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) return n.forEach(visit);
+        if (typeof n.type !== 'string' || (n !== fn.body && /Function|ObjectMethod|ClassMethod/.test(n.type))) return;
+        if (n.type === 'ReturnStatement') results.push(n.argument);
+        for (const key in n) if (!SKIP_KEYS.has(key) && n[key] && typeof n[key] === 'object') visit(n[key]);
+      };
+      visit(fn.body);
+    }
+    const kinds = results.map(kindOf);
+    return kinds.includes('template') ? 'template' : kinds.includes('unknown') ? 'unknown' : undefined;
   }
 
   function isMeteor(n: Node): boolean {
     return n?.type === 'Identifier' && meteorNames.has(n.name);
   }
 
+  function isBlaze(n: Node): boolean {
+    return n?.type === 'Identifier' && blazeIds.has(n.name);
+  }
+
   /** `Template.instance()` */
   function isTemplateInstanceCall(n: Node): boolean {
-    return n?.type === 'CallExpression' && isMember(n.callee) && isIdent(n.callee.object, 'Template') && propName(n.callee) === 'instance';
+    return n?.type === 'CallExpression' && isMember(n.callee) && isTemplateId(n.callee.object) && propName(n.callee) === 'instance';
   }
 
   /**
@@ -336,7 +558,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       if (stmt.type === 'ExportDefaultDeclaration') {
         const d = unwrap(stmt.declaration);
         const obj = d?.type === 'ObjectExpression' ? d : d?.type === 'Identifier' ? objects.get(d.name) : undefined;
-        if (obj) addObjectMap('@default', obj);
+        if (obj) addObjectMap('@default', obj, d.type === 'Identifier' ? d.name : undefined);
         continue;
       }
       const decl = stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
@@ -349,15 +571,16 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
           const local = sp.local?.name;
           const exported = sp.exported?.type === 'Identifier' ? sp.exported.name : sp.exported?.value;
           if (!local || !exported || local === exported || !objects.has(local)) continue;
-          if (exported === 'default') addObjectMap('@default', objects.get(local));
-          else addObjectMap(exported, objects.get(local));
+          if (exported === 'default') addObjectMap('@default', objects.get(local), local);
+          else addObjectMap(exported, objects.get(local), local);
         }
       }
     }
   }
 
-  function addObjectMap(name: string, obj: Node) {
-    const members: MethodDef[] = [];
+  /** `localName`: the variable holding the object, whose later `obj[key] = fn` are members too. */
+  function addObjectMap(name: string, obj: Node, localName: string | undefined = name === '@default' ? undefined : name) {
+    const members: MethodDef[] = localName ? assignedDefs(localName, obj, 'method', fileEnv ?? 'both', undefined, false) : [];
     const spreads: string[] = [];
     for (const p of obj.properties) {
       if (p.type === 'SpreadElement') {
@@ -377,23 +600,30 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
    * `Meteor.methods(x)`, `Meteor.publish(x)`: the definitions of an object literal, following spreads,
    * `Object.assign`, local variables and imports (resolved later against the workspace).
    */
-  function registerObject(arg: Node, kind: 'method' | 'publication', env: Env, depth = 0): void {
+  function registerObject(arg: Node, kind: 'method' | 'publication', env: Env, depth = 0, at?: Node): void {
     const n = arg && unwrap(arg);
     if (!n || depth > 8) return;
     if (n.type === 'ObjectExpression') {
       for (const p of n.properties) {
-        if (p.type === 'SpreadElement') registerObject(p.argument, kind, env, depth + 1);
+        if (p.type === 'SpreadElement') registerObject(p.argument, kind, env, depth + 1, at);
         else addDefFromProperty(p, kind, env);
       }
       return;
     }
     // Object.assign({}, a, b)
     if (n.type === 'CallExpression' && isMember(n.callee) && isIdent(n.callee.object, 'Object') && propName(n.callee) === 'assign') {
-      for (const a of n.arguments) if (a.type !== 'SpreadElement') registerObject(a, kind, env, depth + 1);
+      for (const a of n.arguments) if (a.type !== 'SpreadElement') registerObject(a, kind, env, depth + 1, at);
       return;
     }
     const local = n.type === 'Identifier' ? objects.get(n.name) ?? localObjects.get(n.name) : undefined;
-    if (local) return registerObject(local, kind, env, depth + 1);
+    if (local) {
+      registerObject(local, kind, env, depth + 1, at);
+      // registrations[name] = fn
+      for (const def of assignedDefs(n.name, local, kind, env, at)) (kind === 'method' ? facts.methods : facts.publications).push(def);
+      // `let registrations = {}; registrations = other;`: the content is not only what is written here
+      if (reassigned.has(n.name)) facts.dynamicRegistrations.push(loc(n.start, n.end));
+      return;
+    }
     const ref = objectRef(n);
     if (ref) facts.registrations.push({ kind, ref, env, loc: loc(n.start, n.end) });
     else facts.dynamicRegistrations.push(loc(n.start, n.end));
@@ -469,6 +699,18 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       case 'NewExpression':
         visitNew(node, env ?? fileEnv ?? 'both');
         break;
+      case 'AssignmentExpression': {
+        // Template.samplePanel = new Template('Template.samplePanel', renderFn): the name callers use is the property
+        // (whatever it is, `Template.__region__` too: the value is a Template)
+        const left = node.left;
+        const t = node.operator === '=' && isMember(left) && isTemplateId(left.object) && isNewTemplate(node.right) ? propName(left) : undefined;
+        if (t) {
+          const p = left.property;
+          const at = p.type === 'StringLiteral' ? loc(p.start + 1, p.end - 1) : loc(p.start, p.end);
+          facts.jsTemplates.push({ name: t, via: 'assignment', loc: at, fullLoc: loc(node.start, node.end) });
+        }
+        break;
+      }
       case 'MemberExpression':
       case 'OptionalMemberExpression': {
         const t = templateNameOf(node);
@@ -508,18 +750,26 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
 
     if (isMeteor(obj)) {
       if (prop === 'methods') {
-        registerObject(args[0], 'method', env);
+        registerObject(args[0], 'method', env, 0, node);
       } else if (CALL_FNS.has(prop)) {
         addCall(facts.calls, args[0], prop, env);
       } else if (prop === 'publish' && args.length === 1) {
         // Meteor.publish({ 'a.b'() {} }), also through a variable or an import
-        registerObject(args[0], 'publication', env);
+        registerObject(args[0], 'publication', env, 0, node);
       } else if (prop === 'publish' || prop === 'publishComposite') {
         // publishComposite: reywood:publish-composite
         addPublication(node, args, env);
       } else if (prop === 'subscribe') {
         addCall(facts.subscriptions, args[0], prop, env);
       }
+      return;
+    }
+
+    // Meteor.server.methods({...}), accounts._server.methods(methods): what Meteor.methods does
+    if ((prop === 'methods' || prop === 'publish') && isDdpServer(obj)) {
+      if (prop === 'methods') registerObject(args[0], 'method', env, 0, node);
+      else if (args.length === 1) registerObject(args[0], 'publication', env, 0, node);
+      else addPublication(node, args, env);
       return;
     }
 
@@ -579,9 +829,13 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       return;
     }
 
-    if (isIdent(obj, 'Template') && prop === 'registerHelper') {
+    // Template.registerHelper, Blaze.registerHelper, UI.registerHelper
+    if ((isTemplateId(obj) || isBlaze(obj)) && prop === 'registerHelper') {
       const n = nameOf(args[0]);
-      if (n?.name) facts.globalHelpers.push(makeMember(n, fnOf(args[1]), node, undefined));
+      if (!n?.name) return;
+      facts.globalHelpers.push(makeMember(n, fnOf(args[1]), node, undefined, args[1]));
+      // a helper whose value is a Template: `{{> name}}` renders it
+      if (isNewTemplate(args[1])) facts.jsTemplates.push({ name: n.name, via: 'helper', loc: loc(n.start, n.end), fullLoc: loc(node.start, node.end) });
       return;
     }
 
@@ -629,7 +883,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
         const n = nameOf(nameProp.value);
         if (n) target.push(makeDef(n, kind, fnInObject(obj), node, env, undefined));
       } else {
-        registerObject(obj, kind, env);
+        registerObject(obj, kind, env, 0, node);
       }
       return;
     }
@@ -701,13 +955,14 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       const n = keyName(p);
       if (!n?.name) continue;
       const fn = p.type === 'ObjectMethod' ? p : fnOf(p.value);
-      out.push(makeMember(n, fn, p, docOf(p)));
+      out.push(makeMember(n, fn, p, docOf(p), p.type === 'ObjectMethod' ? p : p.value));
     }
     return out;
   }
 
-  function makeMember(n: NameResult, fn: Node, full: Node, doc: string | undefined): Member {
-    return {
+  /** `value`: the helper's value, to know whether `{{> name}}` can render it. */
+  function makeMember(n: NameResult, fn: Node, full: Node, doc: string | undefined, value?: Node): Member {
+    const m: Member = {
       name: n.name!,
       nameKind: n.kind,
       loc: loc(n.start, n.end),
@@ -717,6 +972,9 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
       snippet: makeSnippet(text.slice(full.start, full.end)),
       doc,
     };
+    const returns = value && helperReturns(value);
+    if (returns) m.returns = returns;
+    return m;
   }
 
   function addCall(target: CallSite[], arg: Node, fn: string, env: Env, uncertain = false) {
@@ -739,7 +997,7 @@ export function parseJs(file: string, source: string, options: JsParseOptions = 
 
   /** `Template.foo` / `Template['foo-bar']` → the template name and the range of `foo`. */
   function templateNameOf(node: Node): NameResult | undefined {
-    if (!isMember(node) || !isIdent(node.object, 'Template')) return undefined;
+    if (!isMember(node) || !isTemplateId(node.object)) return undefined;
     const p = node.property;
     if (!node.computed && p.type === 'Identifier') {
       if (TEMPLATE_STATICS.has(p.name) || p.name.startsWith('_')) return undefined;
@@ -964,6 +1222,56 @@ function isMember(n: Node): boolean {
 
 function isIdent(n: Node, name: string): boolean {
   return n?.type === 'Identifier' && n.name === name;
+}
+
+/**
+ * Framework globals: the modules exporting them (`import`, `module.link`) and the packages defining them
+ * as package globals in compiled code (`Package.blaze.Blaze`). Anything else with the same name is not the framework.
+ */
+const FRAMEWORK: Record<string, { modules: string[]; pkgs: string[] }> = {
+  Meteor: { modules: ['meteor/meteor'], pkgs: ['meteor'] },
+  Template: { modules: ['meteor/templating', 'meteor/blaze', 'meteor/templating-runtime'], pkgs: ['templating', 'blaze', 'templating-runtime'] },
+  Blaze: { modules: ['meteor/blaze'], pkgs: ['blaze'] },
+  UI: { modules: ['meteor/blaze', 'meteor/ui'], pkgs: ['blaze', 'ui'] },
+};
+
+/**
+ * `module.link('meteor/meteor', { Meteor(v) { Meteor = v } }, 0)`, what Meteor compiles an import into:
+ * the module and, for every export, the local variable it is assigned to.
+ */
+function moduleLink(n: Node): { spec: string; bindings: [string, string][] } | undefined {
+  if (n.type !== 'CallExpression' || !isMember(n.callee) || propName(n.callee) !== 'link') return undefined;
+  if (n.callee.object?.type !== 'Identifier' || n.callee.object.name !== 'module') return undefined;
+  const [spec, setters] = n.arguments ?? [];
+  if (spec?.type !== 'StringLiteral' || setters?.type !== 'ObjectExpression') return undefined;
+  const bindings: [string, string][] = [];
+  for (const p of setters.properties) {
+    const name = p.key?.type === 'Identifier' ? p.key.name : p.key?.type === 'StringLiteral' ? p.key.value : undefined;
+    const fn = p.type === 'ObjectMethod' ? p : p.type === 'ObjectProperty' ? fnOf(p.value) : undefined;
+    const param = fn?.params?.[0]?.type === 'Identifier' ? fn.params[0].name : undefined;
+    const body = fn?.body?.type === 'BlockStatement' ? fn.body.body : fn?.body ? [{ type: 'ExpressionStatement', expression: fn.body }] : [];
+    for (const st of body) {
+      const e = st.type === 'ExpressionStatement' ? st.expression : undefined;
+      if (name && param && e?.type === 'AssignmentExpression' && e.left.type === 'Identifier' && e.right?.type === 'Identifier' && e.right.name === param) {
+        bindings.push([name, e.left.name]);
+      }
+    }
+  }
+  return { spec: spec.value, bindings };
+}
+
+/**
+ * `Package.meteor.Meteor`, `Package['templating-runtime'].Template`, `Package.blaze.Blaze.Template`:
+ * a global of a package in compiled code (`pkg`: the package, `name`: the last property).
+ */
+function packageGlobal(n: Node): { pkg: string; name: string } | undefined {
+  if (!isMember(n) || !isMember(n.object)) return undefined;
+  const name = propName(n);
+  let pkgNode = n.object;
+  while (isMember(pkgNode.object)) pkgNode = pkgNode.object;
+  const root = pkgNode.object;
+  const pkg = propName(pkgNode);
+  return root?.type === 'Identifier' && root.name === 'Package' && pkg && name ? { pkg, name } : undefined;
 }
 
 function propName(member: Node): string | undefined {

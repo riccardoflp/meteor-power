@@ -201,7 +201,7 @@ async function togglePaths(indexer: WorkspaceIndexer, exclude: boolean, uri?: vs
     }
     const before = indexer.pathStatus(u, isDir);
     if (before.always) {
-      notes.push(`${rel}: node_modules, .git and .meteor/local are never indexed.`);
+      notes.push(before.by ? `${rel}: ${before.by}, never indexed.` : `${rel}: node_modules, .git and .meteor/local are never indexed.`);
       continue;
     }
     const next = togglePath(patterns, u.fsPath.replace(/\\/g, '/'), rel, isDir, exclude, indexer.pathFilter);

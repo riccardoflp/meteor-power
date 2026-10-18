@@ -43,6 +43,11 @@ export interface MethodDef extends NameSource {
   params: string[];
   isAsync: boolean;
   env: Env;
+  /**
+   * Added under a condition or from another function (`if (x) registrations[name] = fn`):
+   * it may exist, so calls to it are not reported, but it is not certainly registered.
+   */
+  conditional?: boolean;
   doc?: string;
   snippet: string;
 }
@@ -91,6 +96,22 @@ export interface Member {
   isAsync: boolean;
   snippet: string;
   doc?: string;
+  /**
+   * For helpers, what `{{> name}}` would render: `template` when the value is a Template
+   * (`new Template(...)`, `Template.x`), `unknown` when it is computed; absent for plain values.
+   */
+  returns?: 'template' | 'unknown';
+}
+
+/**
+ * A template created in JavaScript: `Template.samplePanel = new Template(...)` (`assignment`, the name
+ * is the property, not the constructor argument) or `Template.registerHelper('x', new Template(...))` (`helper`).
+ */
+export interface JsTemplate {
+  name: string;
+  via: 'assignment' | 'helper';
+  loc: Loc;
+  fullLoc: Loc;
 }
 
 export type TemplatePartKind = 'helpers' | 'events' | 'onCreated' | 'onRendered' | 'onDestroyed';
@@ -195,6 +216,7 @@ export interface FileFacts {
   templateRefs: TemplateRef[];
   templateLinks: TemplateLink[];
   globalHelpers: Member[];
+  jsTemplates: JsTemplate[];
   templates: TemplateHtml[];
   htmlUsages: HtmlUsage[];
   htmlMarks: HtmlMark[];
@@ -228,6 +250,7 @@ export function emptyFacts(file: string): FileFacts {
     templateRefs: [],
     templateLinks: [],
     globalHelpers: [],
+    jsTemplates: [],
     templates: [],
     htmlUsages: [],
     htmlMarks: [],
