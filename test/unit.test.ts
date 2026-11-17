@@ -272,6 +272,23 @@ test('parser keeps going on broken files and returns null only when hopeless', (
   assert.ok(partial === null || partial.methods.length === 1);
   const html = parseHtml('x.html', '<template name="t">{{foo</template>');
   assert.equal(html.templates.length, 1);
+  // Object.freeze() without argument, wherever a value is unwrapped
+  const frozen = parseJs(
+    'x.js',
+    `import { Meteor } from 'meteor/meteor';
+export const A = Object.freeze();
+export const B = { c: Object.freeze() };
+export default Object.freeze();
+const { d } = Object.freeze();
+const methods = {};
+methods[Object.freeze()] = () => {};
+Meteor.methods(methods);
+Meteor.methods(Object.freeze());
+Meteor.call(Object.freeze());
+Template.t.helpers(Object.freeze());
+Meteor.methods({ 'a.b'() {} });`,
+  );
+  assert.deepEqual(frozen?.methods.map((m) => m.name), ['a.b']);
 });
 
 test('custom wrappers: define and call methods/publications through project functions', () => {

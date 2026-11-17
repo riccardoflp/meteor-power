@@ -35,7 +35,10 @@ export function forEachNode(node: unknown, cb: (n: t.Node) => void): void {
   }
 }
 
-/** Strips what does not change a value: `x as T`, `x!`, `(x)`, `Object.freeze(x)`. */
+/**
+ * Strips what does not change a value: `x as T`, `x!`, `(x)`, `Object.freeze(x)`.
+ * Never gives `undefined` for a node: `Object.freeze()` without argument is kept as it is.
+ */
 export function unwrap(node: t.Node): t.Node;
 export function unwrap(node: MaybeNode): MaybeNode;
 export function unwrap(node: MaybeNode): MaybeNode {
@@ -50,7 +53,7 @@ export function unwrap(node: MaybeNode): MaybeNode {
       n.type === 'ParenthesizedExpression'
     ) {
       n = n.expression;
-    } else if (n.type === 'CallExpression' && isMember(n.callee) && isIdent(n.callee.object, 'Object') && propName(n.callee) === 'freeze') {
+    } else if (n.type === 'CallExpression' && n.arguments.length > 0 && isMember(n.callee) && isIdent(n.callee.object, 'Object') && propName(n.callee) === 'freeze') {
       n = n.arguments[0];
     } else return n;
   }
