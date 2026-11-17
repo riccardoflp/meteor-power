@@ -89,6 +89,7 @@ If your project defines or calls methods through its own functions instead of `M
 
 Supported shapes: `fn('name', handler)`, `fn('name', { run })`, `fn({ name: 'x', run() {} })`, `fn({ 'a.b'() {}, 'a.c'() {} })` and the same with `new`. Callers take the name as first argument, or `{ name: 'x' }`.
 A bare name (`callMethod`) matches both `callMethod(...)` and `Api.callMethod(...)`; a full path (`Api.callMethod`) matches only that.
+Names are completed inside `callMethod('…')` and the subscribe wrappers too.
 
 ## Blaze
 

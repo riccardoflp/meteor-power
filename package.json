@@ -31,6 +31,15 @@
     "theme": "dark"
   },
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Meteor Power reads the files of the workspace and of the Meteor package cache from the local disk."
+    }
+  },
   "activationEvents": [
     "workspaceContains:.meteor/release",
     "workspaceContains:**/.meteor/release"

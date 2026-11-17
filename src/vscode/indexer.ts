@@ -548,6 +548,11 @@ export class WorkspaceIndexer implements vscode.Disposable {
     return [...main, ...more];
   }
 
+  /** The parser options of the last scan: the project's own wrapper functions. */
+  get parseOptions(): JsParseOptions {
+    return this.options;
+  }
+
   /** `meteorPower.exclude` with the conventional exclusions of the apps. */
   get pathFilter(): PathFilter {
     return this.filter;

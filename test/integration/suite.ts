@@ -79,6 +79,31 @@ const checks: [string, () => Promise<void>][] = [
     },
   ],
   [
+    'completion: method names inside a wrapper from meteorPower.methods.callFunctions',
+    async () => {
+      const doc = await vscode.workspace.openTextDocument(uri('client/orders.js'));
+      await vscode.window.showTextDocument(doc);
+      const edit = new vscode.WorkspaceEdit();
+      const end = doc.lineAt(doc.lineCount - 1).range.end;
+      edit.insert(doc.uri, end, "\ncallMethod('orders.");
+      await vscode.workspace.applyEdit(edit);
+      const pos = doc.lineAt(doc.lineCount - 1).range.end;
+      const list = await vscode.commands.executeCommand<vscode.CompletionList>('vscode.executeCompletionItemProvider', doc.uri, pos, "'");
+      const labels = list.items.map((i) => (typeof i.label === 'string' ? i.label : i.label.label));
+      await vscode.commands.executeCommand('workbench.action.files.revert');
+      assert.ok(labels.includes('orders.create'), labels.slice(0, 20).join(','));
+    },
+  ],
+  [
+    'hover: markdown from the workspace is not trusted (no command links)',
+    async () => {
+      const [doc, pos] = await posOf('client/legacy/logic/userCard.js', "'users.update'", 3);
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>('vscode.executeHoverProvider', doc.uri, pos);
+      const md = hovers.flatMap((h) => h.contents).filter((c): c is vscode.MarkdownString => typeof c !== 'string' && 'isTrusted' in c);
+      assert.ok(md.length && md.every((m) => !m.isTrusted));
+    },
+  ],
+  [
     'completion: helpers inside {{ }} of the enclosing template',
     async () => {
       const doc = await vscode.workspace.openTextDocument(uri('imports/ui/components/userCard.html'));

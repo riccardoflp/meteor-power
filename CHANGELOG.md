@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Completion of method and publication names inside the project's wrappers (`meteorPower.methods.callFunctions`, `meteorPower.publications.subscribeFunctions`) and `useSubscribe('…')`
+- Works in Restricted Mode (untrusted workspaces): the extension only reads files, it never runs them
+
+### Security
+
+- Hovers are no longer trusted Markdown: a `command:` link in a JSDoc of the workspace could run a VS Code command when clicked
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

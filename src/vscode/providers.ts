@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { nameCompletionContext } from '../core/completion';
 import { MeteorIndex, Named, Scope } from '../core/index';
 import { Loc, Member, MethodDef } from '../core/model';
 import {
@@ -98,8 +99,8 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
   function hoverFor(t: Target): vscode.MarkdownString | undefined {
     const a = index.a;
     const scope = index.scopeOf(t.loc.file);
+    // not trusted: it shows JSDoc written in the workspace, where a `command:` link must not run anything
     const md = new vscode.MarkdownString(undefined, true);
-    md.isTrusted = true;
     const notIn = (missing: string[]) => `\n\n$(warning) Not defined in ${missing.length === 1 ? 'app' : 'apps'} ${appList(index, missing)}.`;
     switch (t.type) {
       case 'method':
@@ -195,11 +196,11 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
     const a = index.a;
     const scope = index.scopeOf(indexer.keyOf(doc.uri.fsPath));
 
-    const call = /(?:\bMeteor\s*\.\s*(call|callAsync|apply|applyAsync|subscribe)|\.\s*(subscribe))\s*\(\s*(['"`])([^'"`]*)$/.exec(prefix);
+    // also the project's own wrappers, as configured
+    const call = nameCompletionContext(prefix, indexer.parseOptions);
     if (call) {
-      const isMethod = !!call[1] && call[1] !== 'subscribe';
-      const typed = call[4];
-      const quote = call[3];
+      const isMethod = call.kind === 'method';
+      const { typed, quote } = call;
       let endChar = pos.character;
       while (endChar < line.length && /[\w.\-/:]/.test(line[endChar])) endChar++;
       const range = new vscode.Range(pos.line, pos.character - typed.length, pos.line, endChar);

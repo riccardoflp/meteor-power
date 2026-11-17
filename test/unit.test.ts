@@ -10,6 +10,7 @@ import { Loc, Pos } from '../src/core/model';
 import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
 import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
 import { isMinified, parseFile } from '../src/core/parseFile';
+import { nameCompletionContext } from '../src/core/completion';
 import { PathFilter, togglePath } from '../src/core/pathFilter';
 import { locateAppPackages, parseMeteorVersions, restrictToArch, warehouseDir } from '../src/core/meteorPackages';
 import * as os from 'os';
@@ -1154,4 +1155,31 @@ test('test files: their definitions count only for test code', () => {
   assert.deepEqual(msgs('tests/e2e.js'), []);
   // navigation still finds them
   assert.equal(idx.a.methods.get('test.seed')?.length, 1);
+});
+
+test('completion: method and publication names, also inside the project wrappers', () => {
+  const ctx = (prefix: string, opts = {}) => nameCompletionContext(prefix, opts);
+  assert.deepEqual(ctx("  await Meteor.callAsync('users."), { kind: 'method', quote: "'", typed: 'users.' });
+  assert.deepEqual(ctx('Meteor.apply("'), { kind: 'method', quote: '"', typed: '' });
+  assert.deepEqual(ctx("Meteor.subscribe('ord"), { kind: 'publication', quote: "'", typed: 'ord' });
+  assert.deepEqual(ctx("this.subscribe(`a"), { kind: 'publication', quote: '`', typed: 'a' });
+  assert.deepEqual(ctx("useSubscribe('orders."), { kind: 'publication', quote: "'", typed: 'orders.' });
+  // not the name argument
+  assert.equal(ctx("Meteor.callAsync('a', '"), undefined);
+  assert.equal(ctx("myuseSubscribe('"), undefined);
+  // wrappers: a bare name also as a property, a path only as written
+  const opts = { methodCallers: ['callMethod', 'Api.call'], subscribeCallers: ['subscribeTo', '$sub'] };
+  assert.equal(ctx("callMethod('", {}), undefined);
+  assert.deepEqual(ctx("await callMethod('orders.", opts), { kind: 'method', quote: "'", typed: 'orders.' });
+  assert.deepEqual(ctx("Api.callMethod('", opts), { kind: 'method', quote: "'", typed: '' });
+  assert.deepEqual(ctx("Api . call('x", opts), { kind: 'method', quote: "'", typed: 'x' });
+  assert.equal(ctx("Other.call('", opts), undefined);
+  assert.equal(ctx("NotApi.call('", opts), undefined);
+  assert.equal(ctx("mycallMethod('", opts), undefined);
+  assert.deepEqual(ctx("subscribeTo('t", opts), { kind: 'publication', quote: "'", typed: 't' });
+  assert.deepEqual(ctx("$sub('", opts), { kind: 'publication', quote: "'", typed: '' });
+  // names that are not identifiers are ignored, not turned into a broken regex
+  assert.deepEqual(ctx("Meteor.call('", { methodCallers: ['a(b', ''] }), { kind: 'method', quote: "'", typed: '' });
+  // the parser options as the extension loads them from the fixture's settings
+  assert.equal(ctx("callMethod('", OPTIONS)?.kind, 'method');
 });
