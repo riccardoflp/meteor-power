@@ -143,7 +143,16 @@ const checks: [string, () => Promise<void>][] = [
       await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(u));
       const d = vscode.languages.getDiagnostics(u).find((x) => x.message.includes('users.typo'));
       assert.ok(d);
-      const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', u, d.range, vscode.CodeActionKind.QuickFix.value);
+      // the request is cancelled while the document still changes (a revert by an earlier check): ask again
+      let actions: vscode.CodeAction[] | undefined;
+      for (let i = 0; !actions; i++) {
+        try {
+          actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', u, d.range, vscode.CodeActionKind.QuickFix.value);
+        } catch (e) {
+          if (i >= 10 || (e as Error).message !== 'Canceled') throw e;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
       const titles = actions.map((a) => a.title);
       assert.ok(titles.includes("Ignore 'users.typo' in Meteor Power diagnostics"), titles.join(' | '));
     },

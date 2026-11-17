@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { runTests } from '@vscode/test-electron';
 
-/** Runs the integration suite inside the locally installed VS Code (no download). */
+/** Runs the integration suite inside the locally installed VS Code, or a downloaded one when there is none. */
 async function main() {
   const root = path.resolve(__dirname, '../../..');
 
@@ -22,8 +22,10 @@ async function main() {
     if (!fs.existsSync(link)) fs.symlinkSync(path.join(multi, 'shared'), link, 'junction');
   }
 
-  const vscodeExecutablePath =
-    process.env.VSCODE_EXECUTABLE ?? path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Microsoft VS Code', 'Code.exe');
+  // the local VS Code (VSCODE_EXECUTABLE, or the default install on Windows); elsewhere, as on CI, a downloaded one
+  // (VSCODE_VERSION: `stable` by default, or e.g. `1.85.0`, the oldest version package.json accepts)
+  const local = process.env.VSCODE_EXECUTABLE ?? path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Microsoft VS Code', 'Code.exe');
+  const vscode = fs.existsSync(local) ? { vscodeExecutablePath: local } : { version: process.env.VSCODE_VERSION ?? 'stable' };
   const runs = [
     { workspace: app, suite: 'suite.js' },
     { workspace: multi, suite: 'multi.js' },
@@ -32,7 +34,7 @@ async function main() {
     console.log(`
 === ${path.basename(r.workspace)} ===`);
     await runTests({
-      vscodeExecutablePath,
+      ...vscode,
       extensionDevelopmentPath: root,
       extensionTestsPath: path.join(root, 'out', 'test', 'integration', r.suite),
       // a synthetic Meteor package cache: the tests never read the developer's own
