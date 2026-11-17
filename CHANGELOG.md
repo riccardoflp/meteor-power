@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
 ### Added
 
 - Completion of method and publication names inside the project's wrappers (`meteorPower.methods.callFunctions`, `meteorPower.publications.subscribeFunctions`) and `useSubscribe('…')`
@@ -16,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Ctrl+T lists the best matches first (same name, prefix, prefix of a segment, substring), workspace code before the code of Meteor packages
+
+### Fixed
+
+- A file containing `Object.freeze()` without argument could not be parsed, so nothing it defines was indexed
 
 ### Security
 
