@@ -9,8 +9,11 @@ import {
   eventTargets,
   findHelper,
   hasConflict,
+  DiagnosticOptions,
   helperUsages,
+  nameSuggestions,
   parentChain,
+  Problem,
   problems,
   references,
   Target,
@@ -22,6 +25,7 @@ import {
   templateUsages,
   visible,
 } from '../core/queries';
+import { symbolMatchScore } from '../core/text';
 import { appsLabel, fileLink, relPath, toLocation, toPos, toRange } from './convert';
 import { WorkspaceIndexer } from './indexer';
 
@@ -313,17 +317,11 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
 
   function workspaceSymbols(query: string): vscode.SymbolInformation[] {
     const a = index.a;
-    const q = query.toLowerCase();
-    const matches = (name: string) => {
-      if (!q) return true;
-      const n = name.toLowerCase();
-      let i = 0;
-      for (const c of n) if (c === q[i]) i++;
-      return i === q.length;
-    };
-    const out: vscode.SymbolInformation[] = [];
+    // the best matches first, so that the limit drops the worst ones
+    const found: { score: number; name: string; kind: vscode.SymbolKind; container: string; loc: Loc }[] = [];
     const add = (name: string, kind: vscode.SymbolKind, container: string, l: Loc) => {
-      if (matches(name)) out.push(new vscode.SymbolInformation(name, kind, container, toLocation(l)));
+      const score = symbolMatchScore(query, name);
+      if (score !== undefined) found.push({ score, name, kind, container, loc: l });
     };
     const inApp = (label: string, l: Loc) => {
       const pkg = index.libraryOf(l.file);
@@ -335,7 +333,10 @@ export function registerProviders(ctx: vscode.ExtensionContext, indexer: Workspa
     for (const [name, defs] of a.publications) for (const d of defs) add(name, vscode.SymbolKind.Event, inApp('Meteor publication', d.loc), d.loc);
     for (const [name, defs] of a.templates) for (const d of defs) add(name, vscode.SymbolKind.Class, inApp('Blaze template', d.loc), d.loc);
     for (const [name, defs] of a.globalHelpers) for (const d of defs) add(name, vscode.SymbolKind.Function, inApp('Blaze global helper', d.loc), d.loc);
-    return out.slice(0, 500);
+    // workspace code before the code of Meteor packages, at equal score
+    const pkg = (l: Loc) => (index.libraryOf(l.file) ? 1 : 0);
+    found.sort((x, y) => x.score - y.score || pkg(x.loc) - pkg(y.loc) || x.name.length - y.name.length || x.name.localeCompare(y.name));
+    return found.slice(0, 500).map((s) => new vscode.SymbolInformation(s.name, s.kind, s.container, toLocation(s.loc)));
   }
 }
 
@@ -356,12 +357,18 @@ export function templatesIn(index: MeteorIndex, scope: Scope): string[] {
 
 // ------------------------------------------------------------------------------------------- CodeLens
 
-export class MeteorCodeLensProvider implements vscode.CodeLensProvider {
+export class MeteorCodeLensProvider implements vscode.CodeLensProvider, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<void>();
+  private readonly listener: vscode.Disposable;
   readonly onDidChangeCodeLenses = this.emitter.event;
 
   constructor(private readonly indexer: WorkspaceIndexer) {
-    indexer.onDidChange(() => this.emitter.fire());
+    this.listener = indexer.onDidChange(() => this.emitter.fire());
+  }
+
+  dispose() {
+    this.listener.dispose();
+    this.emitter.dispose();
   }
 
   refresh() {
@@ -450,11 +457,7 @@ export class MeteorDiagnostics implements vscode.Disposable {
       information: vscode.DiagnosticSeverity.Information,
       hint: vscode.DiagnosticSeverity.Hint,
     }[cfg.get<string>('diagnostics.severity', 'warning')] ?? vscode.DiagnosticSeverity.Warning;
-    const opts = {
-      ignoreMethods: cfg.get<string[]>('diagnostics.ignoreMethods', []),
-      ignorePublications: cfg.get<string[]>('diagnostics.ignorePublications', []),
-      ignoreTemplates: cfg.get<string[]>('diagnostics.ignoreTemplates', []),
-    };
+    const opts = diagnosticOptions();
     const index = this.indexer.index;
     const entries: [vscode.Uri, vscode.Diagnostic[]][] = [];
     for (const f of index.allFacts()) {
@@ -475,4 +478,72 @@ export class MeteorDiagnostics implements vscode.Disposable {
   dispose() {
     this.collection.dispose();
   }
+}
+
+function diagnosticOptions(): DiagnosticOptions {
+  const cfg = vscode.workspace.getConfiguration('meteorPower');
+  return {
+    ignoreMethods: cfg.get<string[]>('diagnostics.ignoreMethods', []),
+    ignorePublications: cfg.get<string[]>('diagnostics.ignorePublications', []),
+    ignoreTemplates: cfg.get<string[]>('diagnostics.ignoreTemplates', []),
+  };
+}
+
+// --------------------------------------------------------------------------------------- Quick fixes
+
+const IGNORE_SETTING: Record<Problem['code'], string> = {
+  'unknown-method': 'diagnostics.ignoreMethods',
+  'unknown-publication': 'diagnostics.ignorePublications',
+  'unknown-template': 'diagnostics.ignoreTemplates',
+};
+
+/** On a reported name: replace it with a close defined name, or add it to the ignore list of its kind. */
+export function registerCodeActions(ctx: vscode.ExtensionContext, indexer: WorkspaceIndexer) {
+  const index = indexer.index;
+  ctx.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      SELECTOR,
+      {
+        provideCodeActions(doc, _range, context) {
+          const ours = context.diagnostics.filter((d) => d.source === 'Meteor Power');
+          if (!ours.length) return undefined;
+          indexer.syncDocument(doc);
+          const file = indexer.keyOf(doc.uri.fsPath);
+          const found = problems(index, file, diagnosticOptions());
+          const actions: vscode.CodeAction[] = [];
+          for (const d of ours) {
+            const p = found.find((x) => x.code === d.code && toRange(x.loc).isEqual(d.range));
+            if (!p) continue;
+            if (p.literal && doc.getText(d.range) === p.name) {
+              for (const [i, name] of nameSuggestions(index, file, p).entries()) {
+                const fix = new vscode.CodeAction(`Change to '${name}'`, vscode.CodeActionKind.QuickFix);
+                fix.edit = new vscode.WorkspaceEdit();
+                fix.edit.replace(doc.uri, d.range, name);
+                fix.diagnostics = [d];
+                fix.isPreferred = i === 0;
+                actions.push(fix);
+              }
+            }
+            const ignore = new vscode.CodeAction(`Ignore '${p.name}' in Meteor Power diagnostics`, vscode.CodeActionKind.QuickFix);
+            ignore.command = { title: ignore.title, command: 'meteorPower.ignoreName', arguments: [p.code, p.name] };
+            ignore.diagnostics = [d];
+            actions.push(ignore);
+          }
+          return actions;
+        },
+      },
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] },
+    ),
+
+    vscode.commands.registerCommand('meteorPower.ignoreName', async (code: Problem['code'], name: string) => {
+      const key = IGNORE_SETTING[code];
+      if (!key || typeof name !== 'string') return;
+      // the diagnostics read the workspace-level settings: write there, keeping what the list holds now
+      const cfg = vscode.workspace.getConfiguration('meteorPower');
+      const inspect = cfg.inspect<string[]>(key);
+      const current = inspect?.workspaceValue ?? inspect?.globalValue ?? inspect?.defaultValue ?? [];
+      if (current.includes(name)) return;
+      await cfg.update(key, [...current, name], vscode.ConfigurationTarget.Workspace);
+    }),
+  );
 }

@@ -17,7 +17,7 @@ Meteor Power indexes the whole workspace and links things **by name**, so it wor
 | Inside the string | **completion** of the names, with parameters and docs |
 | Hover | signature, environment (server/client), file, JSDoc, number of calls |
 | CodeLens | `N calls` above each method, `N subscriptions` above each publication |
-| Diagnostics | warning on calls to undefined methods or publications (Information when some Meteor packages could not be read) |
+| Diagnostics | warning on calls to undefined methods or publications (Information when some Meteor packages could not be read), with quick fixes: the closest defined names, or ignore the name |
 
 ![Hover on a method called through a constant: signature, environment, file, JSDoc and number of calls](docs/images/hover-method.png)
 

@@ -137,6 +137,18 @@ const checks: [string, () => Promise<void>][] = [
     },
   ],
   [
+    'quick fixes: ignore an unknown method',
+    async () => {
+      const u = uri('client/legacy/logic/userCard.js');
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(u));
+      const d = vscode.languages.getDiagnostics(u).find((x) => x.message.includes('users.typo'));
+      assert.ok(d);
+      const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>('vscode.executeCodeActionProvider', u, d.range, vscode.CodeActionKind.QuickFix.value);
+      const titles = actions.map((a) => a.title);
+      assert.ok(titles.includes("Ignore 'users.typo' in Meteor Power diagnostics"), titles.join(' | '));
+    },
+  ],
+  [
     'workspace symbols: methods and templates',
     async () => {
       const syms = await vscode.commands.executeCommand<vscode.SymbolInformation[]>('vscode.executeWorkspaceSymbolProvider', 'userCard');

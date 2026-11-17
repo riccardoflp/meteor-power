@@ -1,6 +1,6 @@
 import { MeteorIndex, PackageGap, Scope } from './index';
 import { Loc, Member, Pos, TemplateLink } from './model';
-import { containsPos, wildcardMatch } from './text';
+import { closestNames, containsPos, wildcardMatch } from './text';
 
 /** What is under the cursor. */
 export type Target =
@@ -297,6 +297,10 @@ export interface Problem {
   loc: Loc;
   message: string;
   code: 'unknown-method' | 'unknown-publication' | 'unknown-template';
+  /** The name that is not defined. */
+  name: string;
+  /** Whether the text at `loc` is the name itself (a string or a `{{> name}}`), not a constant: it can be replaced. */
+  literal: boolean;
   /** Some Meteor packages of the app could not be analyzed: the name may be defined there. */
   uncertain?: boolean;
 }
@@ -321,30 +325,30 @@ export function problems(index: MeteorIndex, file: string, opts: DiagnosticOptio
   // test code sees the definitions of test files; the app does not load them
   const testCaller = index.isTestCode(file);
   /** Not defined anywhere, or not in some of the apps this file belongs to (e.g. shared code). */
-  const check = (what: string, name: string, all: string[], loc: Loc, code: Problem['code']) => {
+  const check = (what: string, name: string, all: string[], loc: Loc, code: Problem['code'], literal: boolean) => {
     const files = testCaller ? all : all.filter((f) => !index.isTestCode(f));
     if (!files.length && all.length) {
-      push({ loc, message: `${what} '${name}' is only defined in test files, which the app does not load.`, code });
+      push({ loc, message: `${what} '${name}' is only defined in test files, which the app does not load.`, code, name, literal });
       return;
     }
     if (!files.length) {
-      push({ loc, message: `${what} '${name}' is not defined in the workspace.`, code });
+      push({ loc, message: `${what} '${name}' is not defined in the workspace.`, code, name, literal });
       return;
     }
     const missing = index.missingApps(scope, files);
-    if (missing.length) push({ loc, message: `${what} '${name}' is not defined in ${missing.length === 1 ? 'app' : 'apps'} ${appList(index, missing)}.`, code });
+    if (missing.length) push({ loc, message: `${what} '${name}' is not defined in ${missing.length === 1 ? 'app' : 'apps'} ${appList(index, missing)}.`, code, name, literal });
   };
   for (const c of f.calls) {
     const name = a.resolve(c);
     if (name === undefined || ignored(opts.ignoreMethods, name)) continue;
-    check('Meteor method', name, (a.methods.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-method');
+    check('Meteor method', name, (a.methods.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-method', c.nameKind === 'string');
   }
   for (const c of f.subscriptions) {
     // `eventBus.subscribe('x')` may not be a DDP subscription
     if (c.uncertain) continue;
     const name = a.resolve(c);
     if (name === undefined || ignored(opts.ignorePublications, name)) continue;
-    check('Publication', name, (a.publications.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-publication');
+    check('Publication', name, (a.publications.get(name) ?? []).map((d) => d.loc.file), c.loc, 'unknown-publication', c.nameKind === 'string');
   }
   // in an app without Blaze, `{{> x}}` belongs to another template language
   const blaze = index.usesBlaze(file);
@@ -354,9 +358,24 @@ export function problems(index: MeteorIndex, file: string, opts: DiagnosticOptio
     const files = templateFiles(index, u.name);
     // {{> name}} rendering a helper that holds a Template, or whose value cannot be told statically
     if (!files.length && findHelper(index, u.template, u.name, scope).some((h) => h.returns)) continue;
-    check('Template', u.name, files, u.loc, 'unknown-template');
+    check('Template', u.name, files, u.loc, 'unknown-template', true);
   }
   return out;
+}
+
+/** Defined names close to the one a problem is about, for a "did you mean" quick fix. */
+export function nameSuggestions(index: MeteorIndex, file: string, p: Problem): string[] {
+  const a = index.a;
+  const scope = index.scopeOf(file);
+  const defined = <T extends { loc: Loc }>(map: Map<string, T[]>) => [...map].filter(([, defs]) => visible(index, scope, defs).length).map(([n]) => n);
+  switch (p.code) {
+    case 'unknown-method':
+      return closestNames(p.name, defined(a.methods));
+    case 'unknown-publication':
+      return closestNames(p.name, defined(a.publications));
+    case 'unknown-template':
+      return closestNames(p.name, [...a.templateNames].filter((n) => templateFiles(index, n).some((f) => index.inScope(scope, f))));
+  }
 }
 
 /** Why a missing name is not certain: the packages whose definitions are unknown, by reason. */

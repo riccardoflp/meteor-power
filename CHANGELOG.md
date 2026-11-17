@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Completion of method and publication names inside the project's wrappers (`meteorPower.methods.callFunctions`, `meteorPower.publications.subscribeFunctions`) and `useSubscribe('…')`
 - Works in Restricted Mode (untrusted workspaces): the extension only reads files, it never runs them
+- Quick fixes on reported names: **Change to '…'** with the closest defined names (when the name is written as a string), and **Ignore '…' in Meteor Power diagnostics**, which adds it to the ignore list of the workspace
+
+### Changed
+
+- Ctrl+T lists the best matches first (same name, prefix, prefix of a segment, substring), workspace code before the code of Meteor packages
 
 ### Security
 

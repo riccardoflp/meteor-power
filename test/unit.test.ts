@@ -5,9 +5,9 @@ import * as path from 'path';
 import { parseJs } from '../src/core/jsParser';
 import { parseHtml } from '../src/core/htmlParser';
 import { MeteorIndex } from '../src/core/index';
-import { definitions, enclosingTemplate, hasConflict, helperOwner, problems, references, targetAt, Target, templateUsages } from '../src/core/queries';
+import { definitions, enclosingTemplate, hasConflict, helperOwner, nameSuggestions, problems, references, targetAt, Target, templateUsages } from '../src/core/queries';
 import { Loc, Pos } from '../src/core/model';
-import { globToRegExp, LineMap, wildcardMatch } from '../src/core/text';
+import { closestNames, editDistance, globToRegExp, LineMap, symbolMatchScore, wildcardMatch } from '../src/core/text';
 import { renameEdits, renameInfo, TextEdit } from '../src/core/rename';
 import { isMinified, parseFile } from '../src/core/parseFile';
 import { nameCompletionContext } from '../src/core/completion';
@@ -1182,4 +1182,46 @@ test('completion: method and publication names, also inside the project wrappers
   assert.deepEqual(ctx("Meteor.call('", { methodCallers: ['a(b', ''] }), { kind: 'method', quote: "'", typed: '' });
   // the parser options as the extension loads them from the fixture's settings
   assert.equal(ctx("callMethod('", OPTIONS)?.kind, 'method');
+});
+
+test('quick fixes: close names for a reported name, only replaceable when written as a string', () => {
+  assert.equal(editDistance('usres', 'users'), 1);
+  assert.equal(editDistance('tasks.insert', 'tasks.remove'), 6);
+  assert.equal(editDistance('', 'abc'), 3);
+  assert.deepEqual(closestNames('tasks.insret', ['tasks.insert', 'tasks.remove', 'tasks.inserts', 'other']), ['tasks.insert', 'tasks.inserts']);
+  assert.deepEqual(closestNames('ab', ['abc', 'xy']), ['abc']);
+  assert.deepEqual(closestNames('same', ['same']), []);
+
+  const idx = new MeteorIndex();
+  idx.update(parseJs('/app/server/tasks.js', `import { Meteor } from 'meteor/meteor';
+Meteor.methods({ 'tasks.insert'() {}, 'tasks.remove'() {} });
+Meteor.publish('tasks.mine', function () {});`)!);
+  idx.update(parseJs('/app/client/main.js', `import { Meteor } from 'meteor/meteor';
+export const NAMES = { BAD: 'tasks.insrt' };
+Meteor.callAsync('tasks.insret');
+Meteor.callAsync(NAMES.BAD);
+Meteor.subscribe('tasks.mien');
+Meteor.callAsync('completely.different');`)!);
+  idx.update(parseHtml('/app/client/main.html', `<template name="taskItem"></template><template name="main">{{> taskIten}}</template>`));
+  const none = { ignoreMethods: [], ignorePublications: [], ignoreTemplates: [] };
+  const found = [...problems(idx, '/app/client/main.js', none), ...problems(idx, '/app/client/main.html', none)];
+  const fixes = found.map((p) => [p.name, p.literal, nameSuggestions(idx, p.loc.file, p)]);
+  assert.deepEqual(fixes, [
+    ['tasks.insret', true, ['tasks.insert']],
+    ['tasks.insrt', false, ['tasks.insert']],
+    ['completely.different', true, []],
+    ['tasks.mien', true, ['tasks.mine']],
+    ['taskIten', true, ['taskItem']],
+  ]);
+});
+
+test('workspace symbols: exact, prefix, segment prefix, substring, then letters in order', () => {
+  const s = (q: string, n: string) => symbolMatchScore(q, n);
+  assert.equal(s('', 'anything'), 0);
+  assert.equal(s('Tasks.Insert', 'tasks.insert'), 0);
+  assert.equal(s('tasks', 'tasks.insert'), 1);
+  assert.equal(s('insert', 'tasks.insert'), 2);
+  assert.equal(s('sert', 'tasks.insert'), 3);
+  assert.equal(s('tskins', 'tasks.insert'), 4);
+  assert.equal(s('xyz', 'tasks.insert'), undefined);
 });

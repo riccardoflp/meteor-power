@@ -3,7 +3,7 @@ import { MeteorIndex } from './core/index';
 import { registerCommands } from './vscode/commands';
 import { registerRename } from './vscode/rename';
 import { WorkspaceIndexer } from './vscode/indexer';
-import { MeteorCodeLensProvider, MeteorDiagnostics, registerProviders, SELECTOR } from './vscode/providers';
+import { MeteorCodeLensProvider, MeteorDiagnostics, registerCodeActions, registerProviders, SELECTOR } from './vscode/providers';
 import { AppFilter, NamesTree, TemplatesMode, TemplatesTree } from './vscode/trees';
 
 export interface MeteorPowerApi {
@@ -24,9 +24,10 @@ export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
   ctx.subscriptions.push(log, indexer, vscode.commands.registerCommand('meteorPower.showLog', () => log.show()));
 
   registerProviders(ctx, indexer);
+  registerCodeActions(ctx, indexer);
 
   const codeLens = new MeteorCodeLensProvider(indexer);
-  ctx.subscriptions.push(vscode.languages.registerCodeLensProvider(SELECTOR, codeLens));
+  ctx.subscriptions.push(codeLens, vscode.languages.registerCodeLensProvider(SELECTOR, codeLens));
 
   const diagnostics = new MeteorDiagnostics(indexer);
   ctx.subscriptions.push(diagnostics, indexer.onDidChange(() => diagnostics.refresh()));
@@ -52,7 +53,7 @@ export function activate(ctx: vscode.ExtensionContext): MeteorPowerApi {
       void vscode.commands.executeCommand('setContext', 'meteorPower.multiApp', multiApp);
     }
   };
-  ctx.subscriptions.push(filter, ...views, filter.onDidChange(updateViews), indexer.onDidChange(updateViews));
+  ctx.subscriptions.push(filter, templatesTree, methodsTree, publicationsTree, ...views, filter.onDidChange(updateViews), indexer.onDidChange(updateViews));
 
   registerCommands(ctx, indexer, templatesTree, filter);
   registerRename(ctx, indexer);

@@ -68,8 +68,9 @@ type NameNode =
   | { kind: 'unknownGroup'; items: NameNode[] };
 
 /** Tree of method (or publication) names grouped by namespace: `users.profile.save` → users › profile › save. */
-export class NamesTree implements vscode.TreeDataProvider<NameNode> {
+export class NamesTree implements vscode.TreeDataProvider<NameNode>, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<NameNode | undefined>();
+  private readonly disposables: vscode.Disposable[] = [];
   readonly onDidChangeTreeData = this.emitter.event;
   private roots: NameNode[] | undefined;
 
@@ -78,8 +79,11 @@ export class NamesTree implements vscode.TreeDataProvider<NameNode> {
     private readonly mode: 'methods' | 'publications',
     private readonly filter: AppFilter,
   ) {
-    indexer.onDidChange(() => this.refresh());
-    filter.onDidChange(() => this.refresh());
+    this.disposables.push(this.emitter, indexer.onDidChange(() => this.refresh()), filter.onDidChange(() => this.refresh()));
+  }
+
+  dispose() {
+    vscode.Disposable.from(...this.disposables).dispose();
   }
 
   refresh() {
@@ -231,8 +235,9 @@ type TplNode =
   | { kind: 'globals' }
   | { kind: 'global'; member: Member };
 
-export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
+export class TemplatesTree implements vscode.TreeDataProvider<TplNode>, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<TplNode | undefined>();
+  private readonly disposables: vscode.Disposable[] = [];
   readonly onDidChangeTreeData = this.emitter.event;
   private children: Map<string, Set<string>> | undefined;
   private roots: string[] | undefined;
@@ -244,8 +249,11 @@ export class TemplatesTree implements vscode.TreeDataProvider<TplNode> {
     public mode: TemplatesMode,
     private readonly filter: AppFilter,
   ) {
-    indexer.onDidChange(() => this.refresh());
-    filter.onDidChange(() => this.refresh());
+    this.disposables.push(this.emitter, indexer.onDidChange(() => this.refresh()), filter.onDidChange(() => this.refresh()));
+  }
+
+  dispose() {
+    vscode.Disposable.from(...this.disposables).dispose();
   }
 
   refresh() {

@@ -111,3 +111,52 @@ export function wildcardMatch(pattern: string, name: string): boolean {
   const re = new RegExp('^' + pattern.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
   return re.test(name);
 }
+
+/** Edit distance with adjacent transpositions (optimal string alignment): `usres` → `users` is 1. */
+export function editDistance(a: string, b: string): number {
+  const rows: number[][] = [];
+  for (let i = 0; i <= a.length; i++) {
+    rows.push([i]);
+    for (let j = 1; j <= b.length; j++) {
+      if (i === 0) {
+        rows[0].push(j);
+        continue;
+      }
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let d = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d = Math.min(d, rows[i - 2][j - 2] + 1);
+      rows[i].push(d);
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+/** The candidates closest to a misspelled name, nearest first (a third of its length apart at most, between 1 and 4 edits). */
+export function closestNames(name: string, candidates: Iterable<string>, max = 3): string[] {
+  const limit = Math.max(1, Math.min(4, Math.floor(name.length / 3)));
+  const found: [string, number][] = [];
+  for (const c of new Set(candidates)) {
+    if (c === name || Math.abs(c.length - name.length) > limit) continue;
+    const d = editDistance(name, c);
+    if (d <= limit) found.push([c, d]);
+  }
+  return found.sort((x, y) => x[1] - y[1] || x[0].localeCompare(y[0])).slice(0, max).map(([c]) => c);
+}
+
+/**
+ * How well a workspace symbol matches a query, lower is better, `undefined` when it does not:
+ * the same name, then a prefix of the name or of a segment (`insert` in `tasks.insert`), then a substring,
+ * then the query letters in order (`tskins`). Case is ignored.
+ */
+export function symbolMatchScore(query: string, name: string): number | undefined {
+  const q = query.toLowerCase();
+  if (!q) return 0;
+  const n = name.toLowerCase();
+  if (n === q) return 0;
+  if (n.startsWith(q)) return 1;
+  if (n.split(/[.\-_/:]/).some((seg) => seg.startsWith(q))) return 2;
+  if (n.includes(q)) return 3;
+  let i = 0;
+  for (const c of n) if (c === q[i]) i++;
+  return i === q.length ? 4 : undefined;
+}
